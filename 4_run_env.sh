@@ -5,8 +5,9 @@ echo ">>> 激活 conda 环境 polymetis ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate polymetis || { echo "❌ 激活失败，请确认 polymetis 环境存在"; exit 1; }
 
-echo ">>> 在当前目录及子目录中查找 teleop ..."
-POLY_ROOT=$(find . -type d -name "teleop" | head -n 1)
+echo ">>> 使用仓库根目录 teleop ..."
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
+POLY_ROOT="$REPO_ROOT/teleop"
 
 if [[ -z "$POLY_ROOT" ]]; then
     echo "❌ 当前目录下未找到 teleop 文件夹"

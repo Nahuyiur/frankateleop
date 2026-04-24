@@ -16,7 +16,7 @@
 class FrankaHandClient {
 private:
   void getGripperState(void);
-  void applyGripperCommand(void);
+  void applyGripperCommand(GripperCommand gripper_cmd);
 
   // gRPC
   std::unique_ptr<GripperServer::Stub> stub_;
@@ -24,7 +24,9 @@ private:
 
   GripperState gripper_state_;
   GripperCommand gripper_cmd_;
-  int prev_cmd_timestamp_ns_;
+  int prev_cmd_timestamp_s_ = 0;
+  int prev_cmd_timestamp_ns_ = 0;
+  float prev_cmd_width_ = -1.0;
   bool prev_cmd_successful_ = true;
 
   // Franka

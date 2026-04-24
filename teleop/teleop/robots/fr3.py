@@ -63,7 +63,12 @@ class fr3Robot(Robot):
         pos = np.append(robot_joints, gripper_pos.width / MAX_OPEN)
         return pos
 
-    def command_joint_state(self, joint_state: np.ndarray) -> None:
+    def command_joint_state(
+            self,
+            joint_state: np.ndarray,
+            gripper_speed: float = 1,
+            gripper_force: float = 1,
+            ) -> None:
         """Command the leader robot to a given state.
 
         Args:
@@ -72,16 +77,29 @@ class fr3Robot(Robot):
         import torch
 
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
-        self.gripper.goto(width=(MAX_OPEN * (1 - joint_state[-1])), speed=1, force=1)
+        self.gripper.goto(
+            width=(MAX_OPEN * (1 - joint_state[-1])),
+            speed=gripper_speed,
+            force=gripper_force,
+        )
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
-        pos_quat = np.zeros(7)
+        ee_pos, ee_quat = self.robot.get_ee_pose()
+        ee_pos = ee_pos.detach().cpu().numpy()
+        ee_quat = ee_quat.detach().cpu().numpy()
+        pos_quat = np.concatenate([ee_pos, ee_quat])
+
+        from scipy.spatial.transform import Rotation
+
+        ee_euler = Rotation.from_quat(ee_quat).as_euler("xyz", degrees=False)
+        pos_euler = np.concatenate([ee_pos, ee_euler])
         gripper_pos = np.array([joints[-1]])
         return {
             "joint_positions": joints,
             "joint_velocities": joints,
             "ee_pos_quat": pos_quat,
+            "ee_pose_euler": pos_euler,
             "gripper_position": gripper_pos,
         }
 
@@ -105,4 +123,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
