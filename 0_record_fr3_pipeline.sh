@@ -24,6 +24,10 @@ Examples:
   bash 0_record_fr3_pipeline.sh pick_block
   bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data --timeout-ms 3000
 
+Recording keys:
+  s=start/resume, w=pause, e=save current episode, d=discard current episode,
+  k=keyframe, q=save and quit
+
 Environment:
   PIPELINE_READY_TIMEOUT=90      seconds to wait for each startup step
   PIPELINE_LOG_ROOT=...          directory for background script logs
@@ -304,7 +308,8 @@ start_background_script() {
 
 run_recording() {
     log "Starting 6_record_fr3.sh in the foreground workflow."
-    log "Use the RGB window controls from script 6. When script 6 exits, scripts 1-4 will be stopped."
+    log "Use RGB window controls: s=start, w=pause, e=save, d=discard, k=keyframe, q=save+quit."
+    log "When script 6 exits, scripts 1-4 will be stopped."
 
     (
         cd "$REPO_ROOT"

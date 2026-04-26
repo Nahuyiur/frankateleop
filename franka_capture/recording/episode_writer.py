@@ -3,6 +3,7 @@
 import gzip
 import json
 import pickle
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -130,6 +131,13 @@ class EpisodeWriter:
         with keyframes_path.open("w", encoding="utf-8") as f:
             json.dump({"keyframes": self.keyframes}, f, ensure_ascii=False, indent=2)
 
+        self._closed = True
+        return self.output_dir
+
+    def discard(self) -> Path:
+        self.close_videos()
+        if self.output_dir.exists():
+            shutil.rmtree(self.output_dir)
         self._closed = True
         return self.output_dir
 

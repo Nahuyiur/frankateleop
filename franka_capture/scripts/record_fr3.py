@@ -95,6 +95,19 @@ def main() -> None:
         print(f"Saved {len(writer.frames)} frames to {output_dir}")
         writer = None
 
+    def discard_episode() -> None:
+        nonlocal writer, record_flag, next_index
+        if writer is None:
+            print("No active episode to discard")
+            return
+        record_flag = False
+        discarded_index = writer.index
+        output_dir = writer.discard()
+        next_index = min(next_index, discarded_index)
+        print(f"Discarded episode {discarded_index}: removed {output_dir}")
+        print(f"Next episode index reset to {next_index}. Press s to record again.")
+        writer = None
+
     try:
         cameras = create_realsense_cameras(DEFAULT_CAMERAS)
         camera_names = list(cameras.keys())
@@ -107,7 +120,8 @@ def main() -> None:
         print(f"Next episode index: {next_index}")
         print(
             "Click the RGB window first. "
-            "s=start/resume, w=pause, e=end/save episode, k=keyframe, q=quit/save."
+            "s=start/resume, w=pause, e=end/save episode, "
+            "d=discard episode, k=keyframe, q=quit/save."
         )
 
         while True:
@@ -132,6 +146,8 @@ def main() -> None:
                 print("Pause recording")
             if key in (ord("e"), ord("E")):
                 save_episode()
+            if key in (ord("d"), ord("D")):
+                discard_episode()
             if key in (ord("k"), ord("K")) and record_flag:
                 if writer is None:
                     start_episode()

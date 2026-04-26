@@ -57,7 +57,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -lt 1 ]]; then
     echo "示例: bash 6_record_fr3.sh pick_block"
     echo "示例: bash 6_record_fr3.sh pick_block /home/pnp/Desktop/franka_record_data --port 6001"
     echo "可选起始编号: bash 6_record_fr3.sh pick_block --index 10"
-    echo "录制键位: s=开始/继续, w=暂停, e=保存当前episode并等待下一次s, k=关键帧, q=保存并退出"
+    echo "录制键位: s=开始/继续, w=暂停, e=保存当前episode并等待下一次s, d=丢弃当前episode, k=关键帧, q=保存并退出"
     exit 0
 fi
 
@@ -84,7 +84,7 @@ echo ">>> 使用仓库根目录 franka_capture ..."
 echo ">>> 任务名: $TASK"
 echo ">>> 数据保存根目录: $OUTPUT_ROOT"
 echo ">>> Episode 编号: 自动从当前最大编号继续"
-echo ">>> 录制键位: s=开始/继续, w=暂停, e=保存当前episode, k=关键帧, q=保存并退出"
+echo ">>> 录制键位: s=开始/继续, w=暂停, e=保存当前episode, d=丢弃当前episode, k=关键帧, q=保存并退出"
 
 cd "$REPO_ROOT"
 python -m franka_capture.scripts.record_fr3 \
