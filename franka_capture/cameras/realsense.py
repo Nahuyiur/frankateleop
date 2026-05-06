@@ -78,7 +78,15 @@ class RealSenseCapture:
                 rs.stream.depth, dim[0], dim[1], rs.format.z16, fps
             )
 
-        self._profile = self._pipeline.start(self._config)
+        try:
+            self._profile = self._pipeline.start(self._config)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"Failed to start RealSense camera {name} "
+                f"(serial={serial_number}, dim={dim[0]}x{dim[1]}, "
+                f"fps={fps}, depth={depth}). Check that this stream profile is "
+                "supported and the camera is not already in use."
+            ) from exc
         self._align = rs.align(rs.stream.color) if depth and align_depth else None
 
         color_stream = self._profile.get_stream(rs.stream.color)

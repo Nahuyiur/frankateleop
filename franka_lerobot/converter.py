@@ -12,13 +12,14 @@ import numpy as np
 
 
 CODEBASE_VERSION = "v2.1"
-DEFAULT_FPS = 15
+DEFAULT_FPS = 10
 DEFAULT_ROBOT_TYPE = "franka_fr3"
 DEFAULT_CHUNKS_SIZE = 1000
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100
 DEFAULT_VIDEO_FILE_SIZE_IN_MB = 200
 STATE_NAMES = [f"joint_{idx}" for idx in range(1, 8)] + ["gripper_width"]
 POSE_NAMES = ["x", "y", "z", "rx", "ry", "rz"]
+ACTION_NAMES = [f"ee_{name}" for name in POSE_NAMES] + STATE_NAMES
 META_FEATURES = {
     "timestamp": {"dtype": "float32", "shape": (1,), "names": None},
     "frame_index": {"dtype": "int64", "shape": (1,), "names": None},
@@ -361,7 +362,7 @@ def _write_episode_parquet(
     columns = {
         "observation.state": pa.array(states.tolist(), type=_fixed_list_type(pa.float32(), 8)),
         "observation.ee_pose": pa.array(poses.tolist(), type=_fixed_list_type(pa.float32(), 6)),
-        "action": pa.array(actions.tolist(), type=_fixed_list_type(pa.float32(), 8)),
+        "action": pa.array(actions.tolist(), type=_fixed_list_type(pa.float32(), 14)),
         "timestamp": pa.array((np.arange(num_frames, dtype=np.float32) / float(fps)).tolist(), type=pa.float32()),
         "frame_index": pa.array(np.arange(num_frames, dtype=np.int64).tolist(), type=pa.int64()),
         "episode_index": pa.array(np.full(num_frames, episode_index, dtype=np.int64).tolist(), type=pa.int64()),
@@ -463,7 +464,7 @@ def _build_features(
     features: dict[str, dict[str, Any]] = {
         "observation.state": {"dtype": "float32", "shape": (8,), "names": STATE_NAMES},
         "observation.ee_pose": {"dtype": "float32", "shape": (6,), "names": POSE_NAMES},
-        "action": {"dtype": "float32", "shape": (8,), "names": STATE_NAMES},
+        "action": {"dtype": "float32", "shape": (14,), "names": ACTION_NAMES},
     }
 
     for camera_field in camera_fields:
@@ -495,10 +496,11 @@ def _build_arrays(frames: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray,
 
     states_array = np.stack(states, axis=0).astype(np.float32)
     poses_array = np.stack(poses, axis=0).astype(np.float32)
+    action_targets = np.concatenate([poses_array, states_array], axis=1)
     if len(states_array) == 1:
-        actions = states_array.copy()
+        actions = action_targets.copy()
     else:
-        actions = np.concatenate([states_array[1:], states_array[-1:]], axis=0)
+        actions = np.concatenate([action_targets[1:], action_targets[-1:]], axis=0)
     return states_array, poses_array, actions.astype(np.float32)
 
 

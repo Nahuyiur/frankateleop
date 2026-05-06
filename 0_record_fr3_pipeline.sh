@@ -23,6 +23,8 @@ Usage:
 Examples:
   bash 0_record_fr3_pipeline.sh pick_block
   bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data --timeout-ms 3000
+  bash 0_record_fr3_pipeline.sh pick_block --fps 30
+  DEFAULT_FPS=30 bash 0_record_fr3_pipeline.sh pick_block
 
 Recording keys:
   s=start/resume, w=pause, e=save current episode, d=discard current episode,
@@ -31,6 +33,7 @@ Recording keys:
 Environment:
   PIPELINE_READY_TIMEOUT=90      seconds to wait for each startup step
   PIPELINE_LOG_ROOT=...          directory for background script logs
+  DEFAULT_FPS=30                 default camera stream and mp4 encoding fps for script 6
 EOF
 }
 
@@ -311,18 +314,14 @@ run_recording() {
     log "Use RGB window controls: s=start, w=pause, e=save, d=discard, k=keyframe, q=save+quit."
     log "When script 6 exits, scripts 1-4 will be stopped."
 
+    set +e
     (
         cd "$REPO_ROOT"
         export PYTHONUNBUFFERED=1
-        exec bash "$REPO_ROOT/6_record_fr3.sh" "$@"
-    ) &
-    RECORD_PID="$!"
-
-    set +e
-    wait "$RECORD_PID"
+        bash "$REPO_ROOT/6_record_fr3.sh" "$@"
+    )
     local rc="$?"
     set -e
-    RECORD_PID=""
 
     if ((rc != 0)); then
         abort "6_record_fr3.sh exited with code $rc."

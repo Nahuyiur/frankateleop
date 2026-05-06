@@ -17,6 +17,9 @@ class fr3Robot(Robot):
             franka_port: int=50051, 
             frankahand_port: int = 50053,
             joint_positions_desired: Optional[torch.Tensor] = None,
+            control_mode: str = "joint",
+            home_on_init: bool = True,
+            open_gripper_on_init: bool = True,
             ):
             
         from polymetis import GripperInterface, RobotInterface
@@ -30,9 +33,10 @@ class fr3Robot(Robot):
             ip_address=robot_ip,
             port=frankahand_port,
         )
-        if joint_positions_desired is None:
+        if joint_positions_desired is None and home_on_init:
             self.robot.go_home()
-        
+        elif joint_positions_desired is None:
+            print("Skipping robot.go_home() on init.")
         else:
             if joint_positions_desired.shape != (7,):
                 raise ValueError(f"Franka requires 7 joints params, current input is: {joint_positions_desired.shape}")
@@ -40,9 +44,21 @@ class fr3Robot(Robot):
             self.joint_positions_desired = joint_positions_desired
             self.robot.move_to_joint_positions(self.joint_positions_desired)
             
-        self.robot.start_joint_impedance()
-        self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
-        time.sleep(1)
+        self.control_mode = control_mode
+        self._start_control_mode(control_mode)
+        if open_gripper_on_init:
+            self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
+            time.sleep(1)
+        else:
+            print("Skipping gripper open on init.")
+
+    def _start_control_mode(self, control_mode: str) -> None:
+        if control_mode == "joint":
+            self.robot.start_joint_impedance()
+        elif control_mode == "ee":
+            self.robot.start_cartesian_impedance()
+        else:
+            raise ValueError(f"Unsupported fr3 control_mode: {control_mode}")
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -51,6 +67,9 @@ class fr3Robot(Robot):
             int: The number of joints of the robot.
         """
         return 8
+
+    def get_control_mode(self) -> str:
+        return self.control_mode
 
     def get_joint_state(self) -> np.ndarray:
         """Get the current state of the leader robot.
@@ -82,6 +101,36 @@ class fr3Robot(Robot):
             speed=gripper_speed,
             force=gripper_force,
         )
+
+    def command_ee_pose(
+            self,
+            pose_6d: np.ndarray,
+            gripper_width: float,
+            gripper_speed: float = 0.05,
+            gripper_force: float = 40.0,
+            update_gripper: bool = True,
+            ) -> None:
+        """Command an absolute EE pose [x, y, z, rx, ry, rz] and gripper width in meters."""
+        pose = np.asarray(pose_6d, dtype=float).reshape(-1)
+        if pose.shape != (6,):
+            raise ValueError(f"Expected pose_6d shape (6,), got {pose.shape}")
+
+        from scipy.spatial.transform import Rotation
+
+        position = torch.tensor(pose[:3], dtype=torch.float32)
+        quat = Rotation.from_euler("xyz", pose[3:], degrees=False).as_quat()
+        orientation = torch.tensor(quat, dtype=torch.float32)
+        update_idx = self.robot.update_desired_ee_pose(position=position, orientation=orientation)
+        if update_idx == -1:
+            raise RuntimeError(f"Franka IK failed for pose_6d={pose.tolist()}")
+
+        if update_gripper:
+            width = float(np.clip(gripper_width, 0.0, MAX_OPEN))
+            self.gripper.goto(
+                width=width,
+                speed=gripper_speed,
+                force=gripper_force,
+            )
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()

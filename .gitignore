@@ -4,6 +4,16 @@
 # large files
 *.png
 *.gif
+*.avi
+*.bag
+*.db3
+*.hdf5
+*.mkv
+*.mov
+*.mp4
+*.npy
+*.npz
+*.pkl.gz
 
 # mac
 *.DS_Store
@@ -14,7 +24,15 @@
 *tb_logs*
 *wandb*
 *wandb_logs*
+camera_checks/
+franka_hdf5_data/
+franka_lerobot_data/
+franka_record_data/
+franka_record_data_10hz/
+logs/
+output/
 outputs/*
+record_data/
 
 # python
 *__pycache__

@@ -2,6 +2,7 @@
 
 import argparse
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
 
@@ -32,6 +33,12 @@ def parse_args():
     parser.add_argument("--port", type=int, default=DEFAULT_ROBOT.port)
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_ROBOT.timeout_ms)
     parser.add_argument("--video-fps", type=int, default=DEFAULT_RECORDING.video_fps)
+    parser.add_argument(
+        "--camera-fps",
+        type=int,
+        default=None,
+        help="Override configured RealSense camera FPS for all cameras.",
+    )
     return parser.parse_args()
 
 
@@ -56,6 +63,14 @@ def _next_episode_index(output_root: str, task: str, start_index: Optional[int])
     while (task_dir / str(next_index)).exists():
         next_index += 1
     return next_index
+
+
+def _camera_configs_with_fps(camera_fps: Optional[int]):
+    if camera_fps is None:
+        return DEFAULT_CAMERAS
+    if camera_fps <= 0:
+        raise ValueError(f"--camera-fps must be positive, got {camera_fps}")
+    return {name: replace(config, fps=camera_fps) for name, config in DEFAULT_CAMERAS.items()}
 
 
 def main() -> None:
@@ -109,13 +124,16 @@ def main() -> None:
         writer = None
 
     try:
-        cameras = create_realsense_cameras(DEFAULT_CAMERAS)
+        camera_configs = _camera_configs_with_fps(args.camera_fps)
+        cameras = create_realsense_cameras(camera_configs)
         camera_names = list(cameras.keys())
         robot = RobotZMQClient(args.host, args.port, timeout_ms=args.timeout_ms)
 
         print(f"Robot node: tcp://{args.host}:{args.port}")
         print(f"Robot DOFs: {robot.num_dofs()}")
         print(f"Connected cameras: {camera_names}")
+        print(f"Camera FPS: {args.camera_fps if args.camera_fps is not None else 'config default'}")
+        print(f"Video FPS: {args.video_fps}")
         print(f"Task: {args.task}")
         print(f"Next episode index: {next_index}")
         print(
@@ -148,11 +166,14 @@ def main() -> None:
                 save_episode()
             if key in (ord("d"), ord("D")):
                 discard_episode()
-            if key in (ord("k"), ord("K")) and record_flag:
-                if writer is None:
-                    start_episode()
-                keyframe = writer.add_keyframe()
-                print(f"Episode {writer.index} keyframe {keyframe} added")
+            if key in (ord("k"), ord("K")):
+                if not record_flag:
+                    print("Keyframe ignored: recording is paused. Press s first.")
+                else:
+                    if writer is None:
+                        start_episode()
+                    keyframe = writer.add_keyframe()
+                    print(f"Episode {writer.index} keyframe {keyframe} added")
 
             if not record_flag:
                 continue

@@ -101,7 +101,7 @@ DEFAULT_CAMERAS = {
 - `name`：保存数据时使用的相机名字
 - `serial_number`：RealSense 设备序列号
 - `dim`：分辨率，默认 `(640, 480)`
-- `fps`：帧率，默认 `15`
+- `fps`：配置文件里的默认帧率；通过脚本录制时通常由 `--fps` 统一覆盖
 - `depth`：是否采集 depth
 - `align_depth`：depth 是否对齐到 color
 - `flip`：是否旋转 180 度
@@ -220,6 +220,7 @@ bash 6_record_fr3.sh pick_block --index 10
 - `s`：开始录制；保存当前 episode 后再按 `s` 会开始下一个自动编号 episode
 - `w`：暂停录制
 - `e`：保存当前 episode，但不退出程序
+- `d`：丢弃当前 episode，并等待下一次 `s` 重新录制
 - `k`：记录一个关键帧
 - `q`：保存当前 episode 并退出
 
@@ -269,6 +270,14 @@ timestamp
 其中 `{camera_name}_image` 按迁移包习惯保存为 OpenCV BGR 图像。
 `pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。`gripper` 保存真实夹爪宽度，单位和 Polymetis gripper width 一致。
 
+录制入口脚本现在只有一个全局 FPS：
+
+```bash
+bash 6_record_fr3.sh pick_block --fps 10
+```
+
+这个参数会同时设置相机 stream FPS 和 mp4 保存 FPS；不传时当前默认是 `10`。`franka_capture/config/fr3_single.py` 里的 `CameraConfig.fps` 仍作为配置文件默认值保留。
+
 ## 常见问题
 
 ### 1. 连接不上 robot node
@@ -300,10 +309,10 @@ python -m franka_capture.scripts.record_fr3 --task test --port 你的端口
 depth=False
 ```
 
-也可以降低 fps，例如：
+也可以降低脚本全局 fps，例如：
 
-```python
-fps=15
+```bash
+bash 6_record_fr3.sh pick_block --fps 10
 ```
 
 ### 4. 保存视频失败

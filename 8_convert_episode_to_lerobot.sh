@@ -11,7 +11,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -lt 1 ]]; then
     echo "默认输出目录: $HOME/Desktop/franka_lerobot_data/<task>_episode_<source_index>"
     echo "示例: bash 8_convert_episode_to_lerobot.sh /home/pnp/Desktop/franka_record_data/pick_block/3"
     echo "示例: bash 8_convert_episode_to_lerobot.sh /home/pnp/Desktop/franka_record_data/pick_block/3 /home/pnp/Desktop/franka_lerobot_data/debug --overwrite"
-    echo "常用参数: --fps 15, --task-description pick_block, --overwrite"
+    echo "常用参数: --fps 10, --task-description pick_block, --overwrite"
+    echo "旧 15fps 数据请显式加: --fps 15"
     exit 0
 fi
 
@@ -31,7 +32,8 @@ if missing:
     print("❌ LeRobot 转换依赖缺失: " + ", ".join(missing))
     print("请安装到 data_convert 环境:")
     print("  conda activate data_convert")
-    print("  python -m pip install -e '/home/pnp/lerobot[dataset]'")
+    print("  python -m pip install --extra-index-url https://download.pytorch.org/whl/cpu -e '/home/pnp/lerobot[dataset]'")
+    print("  python -m pip install 'imageio[ffmpeg]'")
     sys.exit(1)
 PY
 }

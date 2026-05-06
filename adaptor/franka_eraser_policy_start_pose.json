@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "captured_at": "2026-05-04T17:24:09+0800",
+  "ee_pose_euler": [
+    0.5513902902603149,
+    0.00144386722240597,
+    0.6232194900512695,
+    3.114755153656006,
+    0.004292162135243416,
+    0.7689217329025269
+  ],
+  "gripper_width": 0.07997449278831481,
+  "description": "Task-specific absolute EE policy start for the FR3 eraser cloud policy."
+}
