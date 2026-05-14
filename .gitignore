@@ -19,6 +19,7 @@
 *.DS_Store
 
 # misc
+.franka_gui_sudo_password
 *logs*
 *runs*
 *tb_logs*
