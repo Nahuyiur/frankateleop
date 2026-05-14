@@ -49,18 +49,6 @@ DEFAULT_ROBOT = RobotEndpointConfig()
 # Update these serial numbers after running the camera self-check on the target
 # machine. Depth is disabled by default to minimize USB bandwidth pressure.
 DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
-    # "exterior_1": CameraConfig(
-    #     name="exterior_1",
-    #     serial_number="336222070587",
-    #     fps=15,
-    #     depth=False,
-    # ),
-    # "exterior_2": CameraConfig(
-    #     name="exterior_2",
-    #     serial_number="332322072361",
-    #     fps=15,
-    #     depth=False,
-    # ),
     # 按照这个格式后续添加相机
     "wrist": CameraConfig(
         name="wrist",
@@ -68,24 +56,18 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
         fps=15,
         depth=False,
     ),
-    # "right": CameraConfig(
-    #     name="right",
-    #     serial_number="332522072275",
-    #     fps=15,
-    #     depth=False,
-    # ),
-    "middle": CameraConfig(
-        name="middle",
+    "left": CameraConfig(
+        name="left",
+        serial_number="347522070848",
+        fps=15,
+        depth=False,
+    ),
+    "right": CameraConfig(
+        name="right",
         serial_number="332522072275",
         fps=15,
         depth=False,
-    ),
-    "left": CameraConfig(
-        name="left",
-        serial_number="348122072222",
-        fps=15,
-        depth=False,
-    ),
+    )
 }
 
 DEFAULT_RECORDING = RecordingConfig()
