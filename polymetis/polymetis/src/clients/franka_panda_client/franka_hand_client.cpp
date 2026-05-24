@@ -13,6 +13,8 @@
 
 using grpc::ClientContext;
 
+constexpr float kMinCommandWidthDeltaMeters = 0.01;
+
 FrankaHandClient::FrankaHandClient(std::shared_ptr<grpc::Channel> channel,
                                    YAML::Node config)
     : stub_(GripperServer::NewStub(channel)) {
@@ -108,7 +110,7 @@ void FrankaHandClient::run(void) {
       bool is_new_command = timestamp_s != prev_cmd_timestamp_s_ ||
                             timestamp_ns != prev_cmd_timestamp_ns_;
       if (is_new_command && has_timestamp &&
-          fabs(cmd_width - prev_cmd_width_) > 0.045)  {
+          fabs(cmd_width - prev_cmd_width_) > kMinCommandWidthDeltaMeters)  {
         // applyGripperCommand() in separate thread
         //std::cout << "fabs" << fabs(cmd_width - prev_cmd_width) << std::endl;
         GripperCommand cmd_to_apply = gripper_cmd_;

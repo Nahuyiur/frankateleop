@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -u
+
+REPO_ID="Nahuyiur/cluttered_push_to_target"
+LOCAL_DIR="/home/pnp/Desktop/cluttered_push_to_target"
+LOG_DIR="/home/pnp/frankateleop/logs/modelscope_upload_cluttered_push_to_target"
+STATE_DIR="/home/pnp/frankateleop/logs/modelscope_upload_cluttered_push_to_target/state"
+PID_FILE="$STATE_DIR/supervisor.pid"
+STATUS_FILE="$STATE_DIR/status.txt"
+LATEST_LOG_FILE="$STATE_DIR/latest_log.txt"
+MAX_WORKERS="${MAX_WORKERS:-4}"
+UPLOAD_PATTERN="modelscope upload ${REPO_ID} ${LOCAL_DIR}"
+
+mkdir -p "$LOG_DIR" "$STATE_DIR"
+
+if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+  echo "Supervisor already running: $(cat "$PID_FILE")"
+  exit 0
+fi
+
+echo "$$" > "$PID_FILE"
+
+write_status() {
+  printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$STATUS_FILE"
+}
+
+upload_finished_in_log() {
+  local log_file="$1"
+  [[ -n "$log_file" && -f "$log_file" ]] && grep -q "Finished uploading to ${REPO_ID}" "$log_file"
+}
+
+verify_remote_paths() {
+  REPO_ID="$REPO_ID" LOCAL_DIR="$LOCAL_DIR" python - <<'PY'
+import os
+import sys
+from modelscope.hub.api import HubApi
+
+repo_id = os.environ["REPO_ID"]
+local_dir = os.environ["LOCAL_DIR"]
+
+local_paths = set()
+for root, _, files in os.walk(local_dir):
+    for name in files:
+        if name == ".ms_upload_cache":
+            continue
+        local_paths.add(os.path.relpath(os.path.join(root, name), local_dir))
+
+api = HubApi()
+remote_paths = set()
+page = 1
+page_size = 100
+while True:
+    files = api.get_dataset_files(
+        repo_id,
+        recursive=True,
+        page_number=page,
+        page_size=page_size,
+    )
+    if not files:
+        break
+    for item in files:
+        if item.get("Type") == "blob":
+            path = item.get("Path") or item.get("Name")
+            if path not in {".gitattributes", "README.md"}:
+                remote_paths.add(path)
+    if len(files) < page_size:
+        break
+    page += 1
+
+missing = local_paths - remote_paths
+extra = remote_paths - local_paths
+print(
+    f"local_data_files={len(local_paths)} "
+    f"remote_data_files={len(remote_paths)} "
+    f"missing_remote={len(missing)} "
+    f"extra_remote={len(extra)}"
+)
+if missing:
+    for path in sorted(missing)[:20]:
+        print(f"MISSING_REMOTE {path}")
+if extra:
+    for path in sorted(extra)[:20]:
+        print(f"EXTRA_REMOTE {path}")
+sys.exit(0 if not missing and not extra else 1)
+PY
+}
+
+find_running_upload_pid() {
+  pgrep -af "$UPLOAD_PATTERN" \
+    | awk -v self="$$" '$1 != self && $0 !~ /supervisor/ { print $1; exit }'
+}
+
+cleanup() {
+  write_status "supervisor exiting"
+  rm -f "$PID_FILE"
+}
+trap cleanup EXIT
+
+attempt=0
+write_status "supervisor started for ${REPO_ID}"
+
+while true; do
+  existing_pid="$(find_running_upload_pid || true)"
+  if [[ -n "$existing_pid" ]]; then
+    write_status "monitoring existing upload pid=${existing_pid}"
+    while kill -0 "$existing_pid" 2>/dev/null; do
+      sleep 60
+    done
+  fi
+
+  attempt=$((attempt + 1))
+  log_file="$LOG_DIR/cluttered_push_to_target_$(date +%Y%m%d_%H%M%S)_attempt${attempt}.log"
+  echo "$log_file" > "$LATEST_LOG_FILE"
+  write_status "starting upload attempt=${attempt}; max_workers=${MAX_WORKERS}; log=${log_file}"
+
+  stdbuf -oL -eL modelscope upload "$REPO_ID" "$LOCAL_DIR" \
+    --repo-type dataset \
+    --commit-message "Upload cluttered_push_to_target dataset" \
+    --max-workers "$MAX_WORKERS" \
+    > "$log_file" 2>&1
+  rc=$?
+
+  if [[ "$rc" -eq 0 ]] && upload_finished_in_log "$log_file"; then
+    if verify_output="$(verify_remote_paths 2>&1)"; then
+      write_status "upload completed and verified; attempt=${attempt}; ${verify_output}; log=${log_file}"
+      exit 0
+    fi
+    write_status "upload attempt=${attempt} reported success but verification failed: ${verify_output}; retrying"
+  fi
+
+  sleep_seconds=$((attempt * 60))
+  if [[ "$sleep_seconds" -gt 600 ]]; then
+    sleep_seconds=600
+  fi
+  write_status "upload attempt=${attempt} failed rc=${rc}; retrying after ${sleep_seconds}s"
+  sleep "$sleep_seconds"
+done

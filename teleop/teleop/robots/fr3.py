@@ -87,6 +87,7 @@ class fr3Robot(Robot):
             joint_state: np.ndarray,
             gripper_speed: float = 1,
             gripper_force: float = 1,
+            update_gripper: bool = True,
             ) -> None:
         """Command the leader robot to a given state.
 
@@ -96,11 +97,12 @@ class fr3Robot(Robot):
         import torch
 
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
-        self.gripper.goto(
-            width=(MAX_OPEN * (1 - joint_state[-1])),
-            speed=gripper_speed,
-            force=gripper_force,
-        )
+        if update_gripper:
+            self.gripper.goto(
+                width=(MAX_OPEN * (1 - joint_state[-1])),
+                speed=gripper_speed,
+                force=gripper_force,
+            )
 
     def command_ee_pose(
             self,
