@@ -98,6 +98,8 @@ class MockRobot:
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         t = time.time() - self._t0
+        gripper_norm = float(self.get_joint_state()[-1])
+        gripper_command = 1.0 if gripper_norm < 0.5 else 0.0
         return {
             "ee_pose_euler": np.asarray(
                 [
@@ -109,7 +111,12 @@ class MockRobot:
                     0.25 * math.sin(t * 0.4),
                 ],
                 dtype=float,
-            )
+            ),
+            "gripper_command": np.asarray([gripper_command], dtype=float),
+            "gripper_command_raw": np.asarray([gripper_command], dtype=float),
+            "gripper_target_width": np.asarray([0.09 * (1.0 - gripper_command)], dtype=float),
+            "gripper_command_timestamp": np.asarray([time.time()], dtype=float),
+            "gripper_command_source": "mock",
         }
 
     def close(self) -> None:

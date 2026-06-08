@@ -126,12 +126,12 @@ observations/images/right
 `observations/state`：
 
 ```text
-[j1, j2, j3, j4, j5, j6, j7, gripper_width]
+[j1, j2, j3, j4, j5, j6, j7, gripper_command]
 ```
 
 - 维度：8
 - 关节角单位：弧度
-- `gripper_width` 单位：米
+- `gripper_command`：二值闭合命令，`0=open, 1=closed`
 
 `observations/ee_pose`：
 
@@ -149,7 +149,7 @@ observations/images/right
 ```text
 [next_x, next_y, next_z, next_rx, next_ry, next_rz,
  next_j1, next_j2, next_j3, next_j4, next_j5, next_j6, next_j7,
- next_gripper_width]
+ next_gripper_command]
 ```
 
 - 维度：14

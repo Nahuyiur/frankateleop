@@ -282,8 +282,10 @@ for method in ("num_dofs", "get_observations"):
         raise RuntimeError(result["error"])
     if method == "num_dofs" and int(result) <= 0:
         raise RuntimeError(f"bad num_dofs: {result}")
-    if method == "get_observations" and "ee_pose_euler" not in result:
-        raise RuntimeError("robot node is missing ee_pose_euler")
+    if method == "get_observations":
+        for key in ("ee_pose_euler", "gripper_command"):
+            if key not in result:
+                raise RuntimeError(f"robot node is missing {key}")
 sock.close(0)
 ctx.term()
 """

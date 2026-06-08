@@ -97,8 +97,13 @@ GUI 保存的数据保持和当前 `franka_capture` 兼容：
 pose
 joint
 gripper
+gripper_width
+gripper_target_width
 timestamp
 <camera_name>_image
 ```
+
+`gripper` 为实际下发给 robot node 的二值闭合命令：`0=open, 1=closed`。
+`gripper_width` 为 Franka Hand 反馈的实际开口宽度，单位米。
 
 图像字段仍然是 OpenCV BGR 顺序，因此现有 HDF5 和 LeRobot 转换脚本可以继续读取。

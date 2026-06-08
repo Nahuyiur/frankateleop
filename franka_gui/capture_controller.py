@@ -21,6 +21,8 @@ from .async_episode_saver import AsyncEpisodeSaver, EpisodeSaveRequest
 from .mock_sources import MockRobot, create_mock_cameras
 
 MAX_GRIPPER_WIDTH = 0.09
+GRIPPER_BINARY_THRESHOLD = 0.5
+GRIPPER_BINARY_SEMANTICS = "binary_closedness_command"
 
 
 @dataclass
@@ -209,6 +211,12 @@ class CaptureThread(QtCore.QThread):
                     "port": self.options.robot_port,
                     "timeout_ms": self.options.robot_timeout_ms,
                 },
+                "gripper_semantics": GRIPPER_BINARY_SEMANTICS,
+                "gripper_values": {"0": "open", "1": "closed"},
+                "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
+                "gripper_width_field": "gripper_width",
+                "gripper_target_width_field": "gripper_target_width",
+                "gripper_command_source": "robot_observations.gripper_command",
                 "cameras": camera_metadata,
             },
         )
@@ -239,10 +247,33 @@ class CaptureThread(QtCore.QThread):
             raise RuntimeError(
                 "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
             )
+        if "gripper_command" not in robot_observations:
+            raise RuntimeError(
+                "robot node 缺少 gripper_command，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
+            )
+        gripper_command_value = _as_scalar(robot_observations["gripper_command"])
+        gripper_command = _as_binary_gripper_command(gripper_command_value)
+        gripper_command_raw = _as_scalar(
+            robot_observations.get("gripper_command_raw", gripper_command_value)
+        )
+        gripper_target_width = _as_scalar(
+            robot_observations.get(
+                "gripper_target_width",
+                MAX_GRIPPER_WIDTH * (1.0 - gripper_command_raw),
+            )
+        )
+        gripper_command_timestamp = _as_scalar(
+            robot_observations.get("gripper_command_timestamp", time.time())
+        )
         frame = {
             "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
             "joint": _as_saved_value(joint_state[:7]),
-            "gripper": float(joint_state[-1] * MAX_GRIPPER_WIDTH),
+            "gripper": gripper_command,
+            "gripper_width": float(joint_state[-1] * MAX_GRIPPER_WIDTH),
+            "gripper_command_raw": gripper_command_raw,
+            "gripper_target_width": gripper_target_width,
+            "gripper_command_timestamp": gripper_command_timestamp,
+            "gripper_command_source": robot_observations.get("gripper_command_source", ""),
             "timestamp": time.time(),
         }
         for name, rgb in rgb_frames.items():
@@ -498,3 +529,17 @@ def _as_saved_value(value: Any):
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
+
+
+def _as_scalar(value: Any) -> float:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        if not value:
+            raise ValueError("Expected scalar value, got empty sequence")
+        value = value[0]
+    return float(value)
+
+
+def _as_binary_gripper_command(value: Any) -> float:
+    return 1.0 if _as_scalar(value) >= GRIPPER_BINARY_THRESHOLD else 0.0

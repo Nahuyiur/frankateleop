@@ -12,10 +12,13 @@ from franka_lerobot.converter import (
     ACTION_NAMES,
     DEFAULT_FPS,
     DEFAULT_ROBOT_TYPE,
+    GRIPPER_BINARY_THRESHOLD,
+    GRIPPER_SEMANTICS,
     POSE_NAMES,
     STATE_NAMES,
     ConversionError,
     discover_task_episode_paths,
+    frame_gripper_command,
     find_episode_pkl,
     load_episode,
 )
@@ -232,7 +235,10 @@ def _write_hdf5_episode(
         h5.attrs["camera_names"] = json.dumps([_camera_field_to_name(field) for field in camera_fields])
         h5.attrs["image_color_order"] = "RGB"
         h5.attrs["source_image_color_order"] = "BGR"
-        h5.attrs["action_semantics"] = "next_frame_absolute_ee_pose_joint_gripper"
+        h5.attrs["action_semantics"] = "next_frame_absolute_ee_pose_joint_gripper_command"
+        h5.attrs["gripper_semantics"] = GRIPPER_SEMANTICS
+        h5.attrs["gripper_values"] = json.dumps({"0": "open", "1": "closed"})
+        h5.attrs["gripper_command_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
 
         h5.create_dataset("frame_index", data=frame_indices, dtype="i8")
         h5.create_dataset("timestamp", data=relative_timestamps, dtype="f4")
@@ -242,7 +248,10 @@ def _write_hdf5_episode(
         observations.create_dataset("state", data=states, dtype="f4")
         observations.create_dataset("ee_pose", data=poses, dtype="f4")
         observations.create_dataset("joint", data=joints, dtype="f4")
-        observations.create_dataset("gripper", data=grippers, dtype="f4")
+        gripper_dataset = observations.create_dataset("gripper", data=grippers, dtype="f4")
+        gripper_dataset.attrs["semantics"] = GRIPPER_SEMANTICS
+        gripper_dataset.attrs["values"] = json.dumps({"0": "open", "1": "closed"})
+        gripper_dataset.attrs["command_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
 
         images = observations.create_group("images")
         for camera_field in camera_fields:
@@ -300,7 +309,10 @@ def _write_task_metadata(
         "state_names": STATE_NAMES,
         "pose_names": POSE_NAMES,
         "action_names": ACTION_NAMES,
-        "action_semantics": "next_frame_absolute_ee_pose_joint_gripper",
+        "action_semantics": "next_frame_absolute_ee_pose_joint_gripper_command",
+        "gripper_semantics": GRIPPER_SEMANTICS,
+        "gripper_values": {"0": "open", "1": "closed"},
+        "gripper_command_threshold": float(GRIPPER_BINARY_THRESHOLD),
         "image_color_order": "RGB",
         "source_image_color_order": "BGR",
         "camera_names": [_camera_field_to_name(field) for field in camera_fields],
@@ -332,7 +344,7 @@ def _build_arrays(
 
     for frame in frames:
         joints.append(np.asarray(frame["joint"], dtype=np.float32))
-        grippers.append(float(frame["gripper"]))
+        grippers.append(frame_gripper_command(frame))
         poses.append(np.asarray(frame["pose"], dtype=np.float32))
         source_timestamps.append(float(frame["timestamp"]))
 

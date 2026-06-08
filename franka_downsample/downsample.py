@@ -178,6 +178,16 @@ def _filter_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path, camer
         "gripper": float(frame["gripper"]),
         "timestamp": float(frame["timestamp"]),
     }
+    for key in (
+        "gripper_width",
+        "gripper_command_raw",
+        "gripper_target_width",
+        "gripper_command_timestamp",
+    ):
+        if key in frame:
+            filtered[key] = float(frame[key])
+    if "gripper_command_source" in frame:
+        filtered["gripper_command_source"] = str(frame["gripper_command_source"])
     for camera_field in camera_fields:
         filtered[camera_field] = frame[camera_field].copy()
     return filtered

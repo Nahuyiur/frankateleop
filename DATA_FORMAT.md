@@ -88,7 +88,9 @@ keyframes = obj["keyframes"]
 {
     "pose": [x, y, z, rx, ry, rz],
     "joint": [j1, j2, j3, j4, j5, j6, j7],
-    "gripper": width,
+    "gripper": command,
+    "gripper_width": actual_width,
+    "gripper_target_width": target_width,
     "timestamp": unix_time,
     "wrist_image": image,
     "right_image": image,
@@ -188,44 +190,45 @@ joint_state[:7]
 格式：
 
 ```text
-width
+command
 ```
 
 含义：
 
-- Franka Hand 当前夹爪开口宽度。
+- 实际下发给 robot node 的二值夹爪闭合命令。
 
 单位：
 
 ```text
-米
+无
 ```
 
-范围大致：
+取值：
 
 ```text
-0.0 ~ 0.09
+0.0 或 1.0
 ```
 
 说明：
 
-- `0.0` 表示完全闭合。
-- `0.09` 表示最大张开，约 9 cm。
+- `0.0` 表示打开。
+- `1.0` 表示闭合。
+- 二值阈值为闭合度 `0.5`。
 
-当前保存时的计算方式：
+当前 GUI 采集时从 robot node 的 observation 读取：
 
 ```python
-gripper = joint_state[-1] * 0.09
+gripper = robot_observations["gripper_command"]
 ```
 
-这里的 `joint_state[-1]` 是 robot node 返回的 normalized gripper width：
+每帧同时保存 `gripper_width`，表示 Franka Hand 反馈的实际开口宽度，单位米：
 
 ```text
 0.0 = 闭合
-1.0 = 张开
+0.09 = 最大张开，约 9 cm
 ```
 
-所以保存进数据集的 `gripper` 已经是真实宽度，不再是归一化值。
+`gripper_target_width` 则是该命令换算后发给夹爪的目标宽度，单位米。
 
 ### `timestamp`
 
@@ -460,9 +463,9 @@ right_image shape: (480, 640, 3)
 当前映射是：
 
 ```text
-observation.state:   8 维 [j1, j2, j3, j4, j5, j6, j7, gripper_width]
+observation.state:   8 维 [j1, j2, j3, j4, j5, j6, j7, gripper_command]
 observation.ee_pose: 6 维 [x, y, z, rx, ry, rz]
-action:             14 维 下一帧 [x, y, z, rx, ry, rz, j1, ..., j7, gripper_width]
+action:             14 维 下一帧 [x, y, z, rx, ry, rz, j1, ..., j7, gripper_command]
 observation.images.<camera>: 每个 <camera>_image 自动转换成一路视频
 ```
 
@@ -505,10 +508,10 @@ bash 11_convert_task_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_block
 HDF5 的核心字段是：
 
 ```text
-observations/state:   float32 (N, 8)   [j1..j7, gripper_width]
+observations/state:   float32 (N, 8)   [j1..j7, gripper_command]
 observations/ee_pose: float32 (N, 6)   [x, y, z, rx, ry, rz]
 observations/joint:   float32 (N, 7)   [j1..j7]
-observations/gripper: float32 (N,)     gripper_width
+observations/gripper: float32 (N,)     gripper_command, 0=open, 1=closed
 action:               float32 (N, 14)  下一帧 [ee_pose(6), state(8)]
 timestamp:            float32 (N,)     i / fps
 source_timestamp:     float64 (N,)     原始 pkl.gz 里的 unix timestamp
@@ -570,6 +573,8 @@ selected_source_indices = [0, 3, 6, 9, ...]
 pose
 joint
 gripper
+gripper_width
+gripper_target_width
 timestamp
 right_image
 ```
@@ -598,7 +603,8 @@ timestamp
 其中：
 
 - `joint` 用于复现 7 维机械臂关节轨迹。
-- `gripper` 用于复现夹爪宽度。
+- `gripper` 用于复现夹爪命令；新数据是 `0=open, 1=closed`。
+  如果 episode 里有 `gripper_target_width`，replay 会用它发实际宽度事件。
 - `timestamp` 用于按原始时间节奏 replay。
 
 `pose` 和图像不会直接用于当前 replay；它们主要用于后续训练、分析或可视化。

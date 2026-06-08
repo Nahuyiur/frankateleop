@@ -12,10 +12,15 @@ import numpy as np
 import zmq
 
 MAX_GRIPPER_WIDTH = 0.09
+GRIPPER_BINARY_THRESHOLD = 0.5
 
 
 def gripper_width_to_command(width: float) -> float:
     return float(np.clip(1.0 - (float(width) / MAX_GRIPPER_WIDTH), 0.0, 1.0))
+
+
+def gripper_command_to_width(command: float) -> float:
+    return float(MAX_GRIPPER_WIDTH * (1.0 - np.clip(float(command), 0.0, 1.0)))
 
 
 class RobotZMQReplayClient:
@@ -235,7 +240,7 @@ def parse_args():
         "--gripper-event-delta",
         type=float,
         default=0.01,
-        help="Emit a direct gripper command when recorded width changes by at least this many meters.",
+        help="Emit a direct gripper command when recorded target width changes by at least this many meters.",
     )
     parser.add_argument(
         "--gripper-hold-sec",
@@ -289,7 +294,7 @@ def load_episode(path: Path):
 
 def extract_trajectory(frames):
     joints = np.asarray([frame["joint"] for frame in frames], dtype=float)
-    gripper_widths = np.asarray([frame["gripper"] for frame in frames], dtype=float)
+    gripper_commands, gripper_widths = _extract_gripper_command_and_width(frames)
     timestamps = np.asarray([frame["timestamp"] for frame in frames], dtype=float)
 
     if joints.ndim != 2 or joints.shape[1] != 7:
@@ -301,21 +306,51 @@ def extract_trajectory(frames):
     if np.any(np.diff(timestamps) < 0):
         raise ValueError("Episode timestamps must be monotonically nondecreasing")
 
-    gripper_min = float(gripper_widths.min())
-    gripper_max = float(gripper_widths.max())
-    if gripper_min < -1e-4 or gripper_max > MAX_GRIPPER_WIDTH + 1e-3:
-        raise ValueError(
-            "Recorded gripper values do not look like real gripper widths in meters: "
-            f"min={gripper_min:.6f}, max={gripper_max:.6f}. "
-            "Use an episode recorded after the gripper-width fix."
-        )
-
-    gripper_commands = np.asarray(
-        [gripper_width_to_command(width) for width in gripper_widths],
-        dtype=float,
-    )
     commands = np.concatenate([joints, gripper_commands[:, None]], axis=1)
     return joints, gripper_widths, timestamps, commands
+
+
+def _extract_gripper_command_and_width(frames) -> Tuple[np.ndarray, np.ndarray]:
+    commands = []
+    target_widths = []
+    for frame in frames:
+        command, target_width = _frame_gripper_command_and_width(frame)
+        commands.append(command)
+        target_widths.append(target_width)
+    return (
+        np.asarray(commands, dtype=float),
+        np.asarray(target_widths, dtype=float),
+    )
+
+
+def _frame_gripper_command_and_width(frame: Dict[str, Any]) -> Tuple[float, float]:
+    value = float(frame["gripper"])
+    if "gripper_width" in frame:
+        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
+        target_width = float(
+            frame.get("gripper_target_width", gripper_command_to_width(command))
+        )
+        return command, _validate_gripper_width(target_width)
+
+    if -1e-4 <= value <= MAX_GRIPPER_WIDTH + 1e-3:
+        width = _validate_gripper_width(value)
+        return gripper_width_to_command(width), width
+
+    if -1e-4 <= value <= 1.0 + 1e-4:
+        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
+        return command, gripper_command_to_width(command)
+
+    raise ValueError(f"Invalid recorded gripper value: {value}")
+
+
+def _validate_gripper_width(width: float) -> float:
+    width = float(width)
+    if width < -1e-4 or width > MAX_GRIPPER_WIDTH + 1e-3:
+        raise ValueError(
+            "Recorded gripper target width is outside the Franka Hand range: "
+            f"{width:.6f} m"
+        )
+    return float(np.clip(width, 0.0, MAX_GRIPPER_WIDTH))
 
 
 def extract_gripper_events(
@@ -395,7 +430,7 @@ def print_episode_summary(
     print(f"Joint last:  {np.array2string(joints[-1], precision=4)}")
     print(f"Joint range: {np.array2string(joints.max(axis=0) - joints.min(axis=0), precision=4)}")
     print(
-        "Gripper width first/last/range: "
+        "Gripper target width first/last/range: "
         f"{gripper_widths[0]:.6f} / {gripper_widths[-1]:.6f} / "
         f"{float(gripper_widths.max() - gripper_widths.min()):.6f}"
     )
@@ -406,7 +441,7 @@ def print_episode_summary(
             print(f"  ... {remaining} more events")
             break
         rel_time = float(timestamp - timestamps[0])
-        print(f"  frame={frame_idx:04d}  t={rel_time:7.3f}s  width={width:.6f} m")
+        print(f"  frame={frame_idx:04d}  t={rel_time:7.3f}s  target_width={width:.6f} m")
 
 
 def check_robot_start(client, commands):
@@ -540,7 +575,7 @@ def replay_trajectory(
             active_gripper_width = gripper_width
             print(
                 f"Sent gripper event at frame {idx + 1}/{total}: "
-                f"width={gripper_width:.6f} m"
+                f"target_width={gripper_width:.6f} m"
             )
             if gripper_hold_sec > 0:
                 print(
