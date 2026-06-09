@@ -18,6 +18,7 @@ from franka_capture.recording.preview import concatenate_rgb_images, show_rgb_pr
 
 MAX_GRIPPER_WIDTH = 0.09
 GRIPPER_BINARY_THRESHOLD = 0.5
+FIXED_RECORDING_FPS = 30
 
 
 def parse_args():
@@ -33,13 +34,6 @@ def parse_args():
     parser.add_argument("--host", default=DEFAULT_ROBOT.host)
     parser.add_argument("--port", type=int, default=DEFAULT_ROBOT.port)
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_ROBOT.timeout_ms)
-    parser.add_argument("--video-fps", type=int, default=DEFAULT_RECORDING.video_fps)
-    parser.add_argument(
-        "--camera-fps",
-        type=int,
-        default=None,
-        help="Override configured RealSense camera FPS for all cameras.",
-    )
     return parser.parse_args()
 
 
@@ -80,12 +74,11 @@ def _next_episode_index(output_root: str, task: str, start_index: Optional[int])
     return next_index
 
 
-def _camera_configs_with_fps(camera_fps: Optional[int]):
-    if camera_fps is None:
-        return DEFAULT_CAMERAS
-    if camera_fps <= 0:
-        raise ValueError(f"--camera-fps must be positive, got {camera_fps}")
-    return {name: replace(config, fps=camera_fps) for name, config in DEFAULT_CAMERAS.items()}
+def _fixed_fps_camera_configs():
+    return {
+        name: replace(config, fps=FIXED_RECORDING_FPS)
+        for name, config in DEFAULT_CAMERAS.items()
+    }
 
 
 def main() -> None:
@@ -106,7 +99,7 @@ def main() -> None:
                 task=args.task,
                 index=next_index,
                 camera_names=camera_names,
-                video_fps=args.video_fps,
+                video_fps=FIXED_RECORDING_FPS,
             )
             print(f"Start recording episode {next_index}: {writer.output_dir}")
             next_index += 1
@@ -139,7 +132,7 @@ def main() -> None:
         writer = None
 
     try:
-        camera_configs = _camera_configs_with_fps(args.camera_fps)
+        camera_configs = _fixed_fps_camera_configs()
         cameras = create_realsense_cameras(camera_configs)
         camera_names = list(cameras.keys())
         robot = RobotZMQClient(args.host, args.port, timeout_ms=args.timeout_ms)
@@ -147,8 +140,8 @@ def main() -> None:
         print(f"Robot node: tcp://{args.host}:{args.port}")
         print(f"Robot DOFs: {robot.num_dofs()}")
         print(f"Connected cameras: {camera_names}")
-        print(f"Camera FPS: {args.camera_fps if args.camera_fps is not None else 'config default'}")
-        print(f"Video FPS: {args.video_fps}")
+        print(f"Camera FPS: {FIXED_RECORDING_FPS}")
+        print(f"Video FPS: {FIXED_RECORDING_FPS}")
         print(f"Task: {args.task}")
         print(f"Next episode index: {next_index}")
         print(

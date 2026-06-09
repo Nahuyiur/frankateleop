@@ -27,21 +27,7 @@ GUI 采集模式固定使用这个根目录。新增任务时只需要输入任�
 /home/pnp/Desktop/franka_record_data/<task>/
 ```
 
-如果要改 FPS：
-
-```bash
-DEFAULT_FPS=15 bash 14_run_capture_gui.sh
-```
-
-GUI 里也可以在 `采集 FPS` 下拉框中切换：
-
-```text
-30 Hz
-15 Hz
-10 Hz
-```
-
-切换 FPS 会重启相机预览，只影响下一条 episode。录制或暂停中不能切换 FPS。
+GUI 采集频率固定为 `30 Hz`。界面不提供 FPS 切换，启动脚本也不接受 FPS 覆盖。
 
 任务名变化后，中间面板会显示 `下一条路径`，用于确认下一条数据会保存到哪个
 `task/index`。

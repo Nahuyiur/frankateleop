@@ -42,7 +42,7 @@ class RealSenseCapture:
         name: str,
         serial_number: str,
         dim: Tuple[int, int] = (640, 480),
-        fps: int = 15,
+        fps: int = 30,
         depth: bool = False,
         align_depth: bool = True,
         flip: bool = False,

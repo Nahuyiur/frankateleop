@@ -24,7 +24,7 @@ class CameraConfig:
     name: str
     serial_number: str
     dim: Tuple[int, int] = (640, 480)
-    fps: int = 15
+    fps: int = 30
     depth: bool = False
     align_depth: bool = True
     flip: bool = False
@@ -50,22 +50,34 @@ DEFAULT_ROBOT = RobotEndpointConfig()
 # machine. Depth is disabled by default to minimize USB bandwidth pressure.
 DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
     # 按照这个格式后续添加相机
-    "wrist": CameraConfig(
-        name="wrist",
+    "left wrist": CameraConfig(
+        name="left wrist",
         serial_number="348122072222",
-        fps=15,
+        fps=30,
         depth=False,
     ),
     "left": CameraConfig(
         name="left",
         serial_number="347522070848",
-        fps=15,
+        fps=30,
+        depth=False,
+    ),
+    "middle": CameraConfig(
+        name="middle",
+        serial_number="332522072275",
+        fps=30,
         depth=False,
     ),
     "right": CameraConfig(
         name="right",
-        serial_number="332522072275",
-        fps=15,
+        serial_number="332522072875",
+        fps=30,
+        depth=False,
+    ),
+    "right wrist": CameraConfig(
+        name="right wrist",
+        serial_number="347622075798",
+        fps=30,
         depth=False,
     )
 }

@@ -88,7 +88,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_views: Dict[str, CameraView] = {}
         self.saved_count = 0
         self._episode_state = "idle"
-        self._current_fps = controller.options.camera_fps
         self._fixed_output_root = str(Path.home() / "Desktop" / "franka_record_data")
         self.controller.options.output_root = self._fixed_output_root
 
@@ -369,24 +368,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.task_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
         self.new_task_btn = QtWidgets.QPushButton("新增采集任务")
         self.new_task_btn.setObjectName("Neutral")
-        self.fps_combo = QtWidgets.QComboBox()
-        for fps in (30, 15, 10):
-            self.fps_combo.addItem(f"{fps} Hz", fps)
-        self._set_fps_combo_value(self.controller.options.camera_fps)
+        self.fps_label = QtWidgets.QLabel("30 Hz")
+        self.fps_label.setObjectName("OutputRoot")
         self.output_root_label = QtWidgets.QLabel(self._fixed_output_root)
         self.output_root_label.setObjectName("OutputRoot")
         self.output_root_label.setWordWrap(True)
         self.next_path_label = QtWidgets.QLabel("")
         self.next_path_label.setObjectName("OutputRoot")
         self.next_path_label.setWordWrap(True)
+        self.next_path_label.setMinimumHeight(52)
+        self.next_path_label.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.next_path_label.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding,
+            QtWidgets.QSizePolicy.Policy.Minimum,
+        )
 
         form = QtWidgets.QFormLayout()
         form.addRow("任务名称", self.task_combo)
         form.addRow("", self.new_task_btn)
-        form.addRow("采集 FPS", self.fps_combo)
+        form.addRow("采集频率", self.fps_label)
         form.addRow("保存根目录", self.output_root_label)
-        form.addRow("下一条路径", self.next_path_label)
         layout.addLayout(form)
+
+        next_path_title = QtWidgets.QLabel("下一条路径")
+        next_path_title.setObjectName("SectionTitle")
+        layout.addWidget(next_path_title)
+        layout.addWidget(self.next_path_label)
 
         metadata_title = QtWidgets.QLabel("附加 metadata")
         metadata_title.setObjectName("SectionTitle")
@@ -464,7 +473,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.discard_btn.clicked.connect(self.controller.discard)
         self.keyframe_btn.clicked.connect(self.controller.add_keyframe)
         self.new_task_btn.clicked.connect(self._create_task)
-        self.fps_combo.currentIndexChanged.connect(self._on_fps_changed)
         self.task_combo.currentTextChanged.connect(self._update_next_path)
 
         self.controller.preview_frame.connect(self._update_preview)
@@ -657,41 +665,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_status(f"已新增任务: {task}")
         self._update_next_path()
 
-    def _on_fps_changed(self, _index: int = -1) -> None:
-        fps = self.fps_combo.currentData()
-        if fps is None:
-            return
-        fps = int(fps)
-        if fps == self._current_fps:
-            return
-        if self._episode_state in {"recording", "paused"}:
-            self._show_error("录制或暂停中不能切换 FPS，请先保存或丢弃当前 episode。")
-            self._set_fps_combo_value(self._current_fps)
-            return
-
-        self._current_fps = fps
-        self.controller.options.camera_fps = fps
-        self.controller.options.video_fps = fps
-        self._set_status(f"切换 FPS 到 {fps} Hz，正在重启相机预览")
-        self._restart_preview()
-
-    def _set_fps_combo_value(self, fps: int) -> None:
-        self.fps_combo.blockSignals(True)
-        found = False
-        for idx in range(self.fps_combo.count()):
-            if int(self.fps_combo.itemData(idx)) == int(fps):
-                self.fps_combo.setCurrentIndex(idx)
-                found = True
-                break
-        if not found:
-            self.fps_combo.addItem(f"{int(fps)} Hz", int(fps))
-            self.fps_combo.setCurrentIndex(self.fps_combo.count() - 1)
-        self.fps_combo.blockSignals(False)
-
     def _set_config_controls_enabled(self, enabled: bool) -> None:
         self.task_combo.setEnabled(enabled)
         self.new_task_btn.setEnabled(enabled)
-        self.fps_combo.setEnabled(enabled)
         self.metadata_edit.setEnabled(enabled)
 
     def _parse_user_metadata(self) -> Optional[Dict[str, object]]:
@@ -713,10 +689,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_next_path(self) -> None:
         task = self.task_combo.currentText().strip()
         if not task or not _is_valid_task_name(task):
-            self.next_path_label.setText(f"{self._fixed_output_root}/<task>/<index>")
+            full_path = f"{self._fixed_output_root}/<task>/<index>"
+            self.next_path_label.setText(f"{self._fixed_output_root}\n<task>/<index>")
+            self.next_path_label.setToolTip(full_path)
             return
         index = self.controller.peek_next_episode_index(task)
-        self.next_path_label.setText(f"{self._fixed_output_root}/{task}/{index}")
+        full_path = f"{self._fixed_output_root}/{task}/{index}"
+        self.next_path_label.setText(f"{self._fixed_output_root}\n{task}/{index}")
+        self.next_path_label.setToolTip(full_path)
 
     def _refresh_disk(self) -> None:
         try:

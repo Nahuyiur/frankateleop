@@ -101,7 +101,7 @@ DEFAULT_CAMERAS = {
 - `name`：保存数据时使用的相机名字
 - `serial_number`：RealSense 设备序列号
 - `dim`：分辨率，默认 `(640, 480)`
-- `fps`：配置文件里的默认帧率；通过脚本录制时通常由 `--fps` 统一覆盖
+- `fps`：相机 stream 帧率；录制入口固定使用 `30 Hz`
 - `depth`：是否采集 depth
 - `align_depth`：depth 是否对齐到 color
 - `flip`：是否旋转 180 度
@@ -270,13 +270,8 @@ timestamp
 其中 `{camera_name}_image` 按迁移包习惯保存为 OpenCV BGR 图像。
 `pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。`gripper` 保存真实夹爪宽度，单位和 Polymetis gripper width 一致。
 
-录制入口脚本现在只有一个全局 FPS：
-
-```bash
-bash 6_record_fr3.sh pick_block --fps 10
-```
-
-这个参数会同时设置相机 stream FPS 和 mp4 保存 FPS；不传时当前默认是 `10`。`franka_capture/config/fr3_single.py` 里的 `CameraConfig.fps` 仍作为配置文件默认值保留。
+录制入口固定使用 `30 Hz`，同时作为 RealSense 相机 stream FPS 和 mp4 保存 FPS。
+脚本不再提供 `--fps`、`--camera-fps` 或 `--video-fps` 覆盖。
 
 ## 常见问题
 
@@ -309,11 +304,7 @@ python -m franka_capture.scripts.record_fr3 --task test --port 你的端口
 depth=False
 ```
 
-也可以降低脚本全局 fps，例如：
-
-```bash
-bash 6_record_fr3.sh pick_block --fps 10
-```
+如果 30Hz 多相机仍然卡顿，优先检查 USB 拓扑、换 USB 3.x 端口或减少同时启用的相机数量。
 
 ### 4. 保存视频失败
 

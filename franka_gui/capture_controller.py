@@ -23,17 +23,22 @@ from .mock_sources import MockRobot, create_mock_cameras
 MAX_GRIPPER_WIDTH = 0.09
 GRIPPER_BINARY_THRESHOLD = 0.5
 GRIPPER_BINARY_SEMANTICS = "binary_closedness_command"
+FIXED_CAPTURE_FPS = 30
 
 
 @dataclass
 class CaptureOptions:
     output_root: str
-    camera_fps: int
-    video_fps: int
+    camera_fps: int = FIXED_CAPTURE_FPS
+    video_fps: int = FIXED_CAPTURE_FPS
     robot_host: str = DEFAULT_ROBOT.host
     robot_port: int = DEFAULT_ROBOT.port
     robot_timeout_ms: int = DEFAULT_ROBOT.timeout_ms
     mock: bool = False
+
+    def __post_init__(self) -> None:
+        self.camera_fps = FIXED_CAPTURE_FPS
+        self.video_fps = FIXED_CAPTURE_FPS
 
 
 @dataclass
@@ -86,7 +91,7 @@ class CaptureThread(QtCore.QThread):
                 cameras = create_mock_cameras(["wrist", "left", "right"], self.options.camera_fps)
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
             else:
-                cameras = create_realsense_cameras(_camera_configs_with_fps(self.options.camera_fps))
+                cameras = create_realsense_cameras(_fixed_fps_camera_configs())
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
 
             camera_names = list(cameras.keys())
@@ -510,14 +515,13 @@ class CaptureController(QtCore.QObject):
         self.error.emit(f"保存失败: {task}/{index}\n{error}")
 
 
-def _camera_configs_with_fps(camera_fps: Optional[int]):
-    if camera_fps is None:
-        return DEFAULT_CAMERAS
+def _fixed_fps_camera_configs():
     from dataclasses import replace
 
-    if camera_fps <= 0:
-        raise ValueError(f"camera_fps must be positive, got {camera_fps}")
-    return {name: replace(config, fps=camera_fps) for name, config in DEFAULT_CAMERAS.items()}
+    return {
+        name: replace(config, fps=FIXED_CAPTURE_FPS)
+        for name, config in DEFAULT_CAMERAS.items()
+    }
 
 
 def _valid_keyframes(keyframes: List[int], frame_count: int) -> List[int]:

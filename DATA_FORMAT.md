@@ -354,51 +354,38 @@ right.mp4
 franka_capture/config/fr3_single.py
 ```
 
-当前配置里有两台 RGB 相机：
+当前配置里的 RGB 相机会按 `franka_capture/config/fr3_single.py` 的
+`DEFAULT_CAMERAS` 动态决定。典型配置如下：
 
 ```python
-"wrist": CameraConfig(
-    name="wrist",
+"left wrist": CameraConfig(
+    name="left wrist",
     serial_number="348122072222",
-    fps=15,
+    fps=30,
     depth=False,
 ),
-"right": CameraConfig(
-    name="right",
-    serial_number="332522072275",
-    fps=15,
+"left": CameraConfig(..., fps=30, depth=False),
+"middle": CameraConfig(..., fps=30, depth=False),
+"right": CameraConfig(..., fps=30, depth=False),
+"right wrist": CameraConfig(
+    name="right wrist",
+    serial_number="347622075798",
+    fps=30,
     depth=False,
-)
+),
 ```
 
 说明：
 
-- `fr3_single.py` 里的 `fps=15` 是相机配置文件中的默认目标帧率。
-- 通过 `6_record_fr3.sh` 或 `0_record_fr3_pipeline.sh` 录制时，脚本级全局 FPS 默认是 `10`，并且会同时覆盖相机采集 FPS 和 mp4 保存 FPS。
+- 录制频率固定为 `30 Hz`。
+- RealSense 相机 stream FPS 和 mp4 保存 FPS 都使用 `30 Hz`。
+- 脚本入口不再提供 `--fps`、`DEFAULT_FPS`、`--camera-fps` 或 `--video-fps` 覆盖。
 - `depth=False`：当前不采集深度。
 - `dim=(640, 480)`：默认分辨率。
 
 ## 当前录制 FPS
 
-脚本入口只有一个全局 FPS 参数：
-
-```bash
-bash 6_record_fr3.sh pick_block --fps 10
-bash 0_record_fr3_pipeline.sh pick_block --fps 10
-```
-
-也可以用环境变量设置默认值：
-
-```bash
-DEFAULT_FPS=10 bash 6_record_fr3.sh pick_block
-DEFAULT_FPS=10 bash 0_record_fr3_pipeline.sh pick_block
-```
-
-含义：
-
-- `--fps` 会同时设置 RealSense 相机 stream FPS 和保存出来的 mp4 FPS。
-- 如果不传，当前脚本默认是 `10`。
-- `franka_capture/config/fr3_single.py` 里的 `CameraConfig.fps` 仍然保留，主要作为配置文件默认值；通过脚本录制时以脚本传入的全局 FPS 为准。
+当前只有一种录制 FPS：`30 Hz`。GUI 和命令行录制入口都会固定使用这个频率。
 
 ## 当前录制按键
 

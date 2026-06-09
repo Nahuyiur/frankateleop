@@ -23,8 +23,6 @@ Usage:
 Examples:
   bash 0_record_fr3_pipeline.sh pick_block
   bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data --timeout-ms 3000
-  bash 0_record_fr3_pipeline.sh pick_block --fps 30
-  DEFAULT_FPS=30 bash 0_record_fr3_pipeline.sh pick_block
 
 Recording keys:
   s=start/resume, w=pause, e=save current episode, d=discard current episode,
@@ -33,7 +31,7 @@ Recording keys:
 Environment:
   PIPELINE_READY_TIMEOUT=90      seconds to wait for each startup step
   PIPELINE_LOG_ROOT=...          directory for background script logs
-  DEFAULT_FPS=30                 default camera stream and mp4 encoding fps for script 6
+  Recording frequency is fixed at 30 Hz.
 EOF
 }
 

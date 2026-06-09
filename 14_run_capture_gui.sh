@@ -5,7 +5,6 @@ echo ">>> 激活 conda 环境 franka_capture ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate franka_capture || { echo "❌ 激活失败，请确认 franka_capture 环境存在"; exit 1; }
 
-DEFAULT_FPS="${DEFAULT_FPS:-30}"
 DEFAULT_OUTPUT_ROOT="$HOME/Desktop/franka_record_data"
 DEFAULT_SUDO_PASSWORD_FILE="$HOME/.franka_gui_sudo_password"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
@@ -22,14 +21,12 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 示例:
   bash 14_run_capture_gui.sh
   bash 14_run_capture_gui.sh --mock
-  DEFAULT_FPS=15 bash 14_run_capture_gui.sh
-  bash 14_run_capture_gui.sh --fps 30
 
 快捷键:
   s 开始/继续, w 暂停, e 保存当前, d 丢弃当前, k 关键帧, q 保存当前
 
 默认:
-  DEFAULT_FPS=$DEFAULT_FPS
+  固定录制频率=30 Hz
   固定保存根目录=$DEFAULT_OUTPUT_ROOT
 EOF
     exit 0
@@ -67,13 +64,10 @@ fi
 
 echo ">>> 使用仓库根目录 franka_gui ..."
 echo ">>> 默认保存根目录: $DEFAULT_OUTPUT_ROOT"
-echo ">>> 默认全局 FPS: $DEFAULT_FPS"
+echo ">>> 固定录制频率: 30 Hz"
 if [[ -n "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" ]]; then
     echo ">>> sudo 密码文件: $FRANKA_GUI_SUDO_PASSWORD_FILE"
 fi
 
 cd "$REPO_ROOT"
-python -m franka_gui.app \
-    --camera-fps "$DEFAULT_FPS" \
-    --video-fps "$DEFAULT_FPS" \
-    "$@"
+python -m franka_gui.app "$@"

@@ -14,14 +14,14 @@ import numpy as np
 class MockCameraConfig:
     name: str
     dim: Tuple[int, int] = (640, 480)
-    fps: int = 15
+    fps: int = 30
 
     def to_dict(self):
         return {"name": self.name, "dim": self.dim, "fps": self.fps}
 
 
 class MockCamera:
-    def __init__(self, name: str, dim: Tuple[int, int] = (640, 480), fps: int = 15) -> None:
+    def __init__(self, name: str, dim: Tuple[int, int] = (640, 480), fps: int = 30) -> None:
         self.name = name
         self.dim = dim
         self.fps = fps
