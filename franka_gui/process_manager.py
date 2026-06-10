@@ -184,6 +184,16 @@ class ProcessManager(QtCore.QObject):
             "PYTHONUNBUFFERED": "1",
             "BI_ARM_STACK_ONLY": "1",
         }
+        gui_password = _read_sudo_password()
+        if gui_password:
+            for key in (
+                "BI_ARM_LOCAL_SUDO_PASSWORD",
+                "BI_ARM_REMOTE_SUDO_PASSWORD",
+                "BI_ARM_SSH_PASSWORD",
+            ):
+                if not env.get(key):
+                    env[key] = gui_password
+            self._emit_log("双臂启动已使用 GUI 私有密码配置传递 sudo/SSH 凭据")
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path), "gui_stack"],
