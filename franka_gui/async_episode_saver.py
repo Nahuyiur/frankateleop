@@ -18,6 +18,9 @@ from PyQt6 import QtCore
 
 from franka_capture.recording.episode_writer import _create_video_writers
 
+PREVIEW_VIDEO_STEM = "preview_all"
+PREVIEW_VIDEO_MAX_HEIGHT = 180
+
 
 @dataclass
 class EpisodeSaveRequest:
@@ -102,6 +105,12 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
 
     try:
         _write_videos(output_dir, request.camera_names, request.video_fps, request.frames)
+        preview_metadata = _write_preview_video(
+            output_dir,
+            request.camera_names,
+            request.video_fps,
+            request.frames,
+        )
         _write_pickle(output_dir, request.index, request.frames, request.keyframes)
         _write_json(output_dir / "keyframes.json", {"keyframes": request.keyframes})
         metadata = dict(request.metadata)
@@ -112,6 +121,7 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
                 "frame_count": len(request.frames),
                 "camera_names": request.camera_names,
                 "video_fps": request.video_fps,
+                "preview_video": preview_metadata,
                 "keyframes": request.keyframes,
             }
         )
@@ -142,6 +152,81 @@ def _write_videos(
     finally:
         for writer in writers.values():
             writer.close()
+
+
+def _write_preview_video(
+    output_dir: Path,
+    camera_names: List[str],
+    video_fps: int,
+    frames: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not camera_names:
+        return {}
+
+    writers = _create_video_writers(output_dir, [PREVIEW_VIDEO_STEM], video_fps)
+    writer = writers[PREVIEW_VIDEO_STEM]
+    written = 0
+    try:
+        for frame in frames:
+            preview_rgb = _make_preview_rgb(frame, camera_names)
+            if preview_rgb is None:
+                continue
+            writer.append_data(preview_rgb)
+            written += 1
+    finally:
+        for active_writer in writers.values():
+            active_writer.close()
+
+    return {
+        "filename": f"{PREVIEW_VIDEO_STEM}.mp4",
+        "camera_names": camera_names,
+        "layout": "horizontal",
+        "max_height": PREVIEW_VIDEO_MAX_HEIGHT,
+        "frame_count": written,
+    }
+
+
+def _make_preview_rgb(frame: Dict[str, Any], camera_names: List[str]) -> np.ndarray | None:
+    images: List[np.ndarray | None] = []
+    for name in camera_names:
+        bgr = frame.get(f"{name}_image")
+        if bgr is None:
+            images.append(None)
+            continue
+        if not hasattr(bgr, "shape") or len(bgr.shape) != 3 or bgr.shape[2] != 3:
+            images.append(None)
+            continue
+        images.append(np.asarray(bgr))
+
+    valid_images = [image for image in images if image is not None]
+    if not valid_images:
+        return None
+
+    target_height = min(PREVIEW_VIDEO_MAX_HEIGHT, *(image.shape[0] for image in valid_images))
+    target_height = max(1, int(target_height))
+    default_width = max(1, int(round(valid_images[0].shape[1] * target_height / max(1, valid_images[0].shape[0]))))
+    resized_rgb = []
+    for bgr in images:
+        if bgr is None:
+            resized_rgb.append(np.zeros((target_height, default_width, 3), dtype=np.uint8))
+            continue
+        height, width = bgr.shape[:2]
+        target_width = max(1, int(round(width * target_height / max(1, height))))
+        resized_bgr = _resize_image(bgr, target_width, target_height)
+        resized_rgb.append(resized_bgr[:, :, ::-1])
+
+    return np.ascontiguousarray(np.concatenate(resized_rgb, axis=1))
+
+
+def _resize_image(image: np.ndarray, width: int, height: int) -> np.ndarray:
+    try:
+        import cv2
+
+        return cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    except Exception:
+        y_idx = np.linspace(0, image.shape[0] - 1, height).astype(int)
+        x_idx = np.linspace(0, image.shape[1] - 1, width).astype(int)
+        return image[y_idx][:, x_idx]
 
 
 def _write_pickle(

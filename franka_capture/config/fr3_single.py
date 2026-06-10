@@ -45,13 +45,15 @@ class RecordingConfig:
 
 
 DEFAULT_ROBOT = RobotEndpointConfig()
+SINGLE_SCHEMA_VERSION = "franka_single_v1"
+SINGLE_GUI_CAMERA_NAMES = ("left_wrist", "left", "middle")
 
 # Update these serial numbers after running the camera self-check on the target
 # machine. Depth is disabled by default to minimize USB bandwidth pressure.
 DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
     # 按照这个格式后续添加相机
-    "left wrist": CameraConfig(
-        name="left wrist",
+    "left_wrist": CameraConfig(
+        name="left_wrist",
         serial_number="348122072222",
         fps=30,
         depth=False,
@@ -74,8 +76,8 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
         fps=30,
         depth=False,
     ),
-    "right wrist": CameraConfig(
-        name="right wrist",
+    "right_wrist": CameraConfig(
+        name="right_wrist",
         serial_number="347622075798",
         fps=30,
         depth=False,

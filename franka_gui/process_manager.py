@@ -28,10 +28,18 @@ class ProcessManager(QtCore.QObject):
     log_line = QtCore.pyqtSignal(str)
     stack_state_changed = QtCore.pyqtSignal(str)
 
-    def __init__(self, repo_root: Path, parent: QtCore.QObject | None = None) -> None:
+    def __init__(
+        self,
+        repo_root: Path,
+        mode: str = "single",
+        parent: QtCore.QObject | None = None,
+    ) -> None:
         super().__init__(parent)
         self.repo_root = repo_root
-        self.log_root = repo_root / "logs" / "fr3_gui"
+        if mode not in {"single", "dual"}:
+            raise ValueError(f"Unsupported process manager mode: {mode}")
+        self.mode = mode
+        self.log_root = repo_root / "logs" / ("fr3_gui_dual" if mode == "dual" else "fr3_gui")
         self.ready_timeout = int(os.environ.get("GUI_READY_TIMEOUT", "90"))
         self._processes: Dict[str, ManagedProcess] = {}
         self._lock = threading.Lock()
@@ -56,6 +64,9 @@ class ProcessManager(QtCore.QObject):
         self._stop_stack_worker(False)
 
     def stop_teleop_env(self) -> None:
+        if self.mode == "dual":
+            self.status_changed.emit("双臂 GUI 模式下请使用“停止全部”清理左右遥操作栈。")
+            return
         threading.Thread(target=self._stop_one_worker, args=("4_run_env",), daemon=True).start()
 
     def tail_logs(self, lines: int = 80) -> str:
@@ -69,6 +80,9 @@ class ProcessManager(QtCore.QObject):
 
     def _start_stack_worker(self) -> None:
         try:
+            if self.mode == "dual":
+                self._start_dual_stack_worker()
+                return
             self.stack_state_changed.emit("starting")
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
@@ -97,7 +111,28 @@ class ProcessManager(QtCore.QObject):
             self._stop_stack_worker(False)
             self.stack_state_changed.emit("error")
 
+    def _start_dual_stack_worker(self) -> None:
+        try:
+            self.stack_state_changed.emit("starting")
+            self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
+            self._run_log_dir.mkdir(parents=True, exist_ok=True)
+            self._emit_log(f"日志目录: {self._run_log_dir}")
+            self._cleanup_stale_pipeline_processes()
+            self._start_dual_stack_script()
+            self.stack_state_changed.emit("running")
+            self.status_changed.emit("双臂机器人栈已启动: left/right 1-4 ready")
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self._stop_stack_worker(False)
+            self.stack_state_changed.emit("error")
+
     def _stop_stack_worker(self, emit_done: bool) -> None:
+        if self.mode == "dual":
+            self._stop_one("15_bi_arm_stack")
+            if emit_done:
+                self.stack_state_changed.emit("stopped")
+                self.status_changed.emit("双臂机器人栈已停止")
+            return
         for label in ("4_run_env", "3_launch_node", "2_launch_gripper", "1_launch_robot"):
             self._stop_one(label)
         if emit_done:
@@ -133,6 +168,37 @@ class ProcessManager(QtCore.QObject):
         with self._lock:
             self._processes[label] = managed
         self._wait_until_ready(label, managed, ready_check)
+        self._emit_log(f"{label} ready")
+
+    def _start_dual_stack_script(self) -> None:
+        assert self._run_log_dir is not None
+        label = "15_bi_arm_stack"
+        log_path = self._run_log_dir / f"{label}.log"
+        script_path = self.repo_root / "15_record_bi_arm_pipeline.sh"
+        if not script_path.exists():
+            raise FileNotFoundError(f"未找到双臂启动脚本: {script_path}")
+        self._emit_log("启动 15_record_bi_arm_pipeline.sh stack-only ...")
+        log = log_path.open("ab")
+        env = {
+            **os.environ,
+            "PYTHONUNBUFFERED": "1",
+            "BI_ARM_STACK_ONLY": "1",
+        }
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(script_path), "gui_stack"],
+                cwd=self.repo_root,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        finally:
+            log.close()
+        managed = ManagedProcess(label, script_path.name, proc, log_path)
+        with self._lock:
+            self._processes[label] = managed
+        self._wait_until_ready(label, managed, self._check_bi_arm_stack_ready)
         self._emit_log(f"{label} ready")
 
     def _wait_for_stable_ready(
@@ -297,6 +363,12 @@ ctx.term()
         text = _tail_file(log_path, 200)
         return "Time passed:" in text
 
+    def _check_bi_arm_stack_ready(self, log_path: Path) -> bool:
+        if not log_path.exists():
+            return False
+        text = _tail_file(log_path, 240)
+        return "BI_ARM_STACK_READY_FOR_GUI" in text
+
     def _emit_log(self, line: str) -> None:
         self.log_line.emit(line)
         self.status_changed.emit(line)
@@ -311,12 +383,14 @@ ctx.term()
             ("script 5", r"(^|[ /])5_capture_image\.sh($| )"),
             ("script 6", r"(^|[ /])6_record_fr3\.sh($| )"),
             ("script 7", r"(^|[ /])7_replay_fr3\.sh($| )"),
+            ("script 15", r"(^|[ /])15_record_bi_arm_pipeline\.sh($| )"),
             ("Polymetis robot launcher", r"scripts/launch_robot\.py"),
             ("Polymetis gripper launcher", r"scripts/launch_gripper\.py"),
             ("Teleop robot node", r"experiments/launch_nodes\.py"),
             ("Teleop env", r"experiments/run_env\.py"),
             ("Capture image module", r"franka_capture\.scripts\.capture_image"),
             ("Record FR3 module", r"franka_capture\.scripts\.record_fr3"),
+            ("Record dual FR3 module", r"franka_capture\.scripts\.record_fr3_dual"),
             ("Replay FR3 module", r"franka_replay\.replay_fr3"),
             ("run_server", r"(^|[ /])run_server($| )"),
             ("franka_hand_client", r"(^|[ /])franka_hand_client($| )"),

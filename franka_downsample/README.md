@@ -62,6 +62,7 @@ bash 12_downsample_task_to_10hz.sh \
 每帧字段：
 
 ```text
+schema_version  # 如果源数据存在
 pose
 joint
 gripper

@@ -29,11 +29,20 @@ class RobotZMQClient:
         self.port = port
         self.timeout_ms = timeout_ms
         self._context = zmq.Context()
+        self._socket = None
+        self._connect_socket()
+
+    def _connect_socket(self) -> None:
         self._socket = self._context.socket(zmq.REQ)
-        self._socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
-        self._socket.setsockopt(zmq.SNDTIMEO, timeout_ms)
+        self._socket.setsockopt(zmq.RCVTIMEO, self.timeout_ms)
+        self._socket.setsockopt(zmq.SNDTIMEO, self.timeout_ms)
         self._socket.setsockopt(zmq.LINGER, 0)
-        self._socket.connect(f"tcp://{host}:{port}")
+        self._socket.connect(f"tcp://{self.host}:{self.port}")
+
+    def _reset_socket(self) -> None:
+        if self._socket is not None:
+            self._socket.close(0)
+        self._connect_socket()
 
     def _request(self, method: str, args: Optional[Dict[str, Any]] = None) -> Any:
         request = {"method": method, "args": args or {}}
@@ -41,9 +50,13 @@ class RobotZMQClient:
             self._socket.send(pickle.dumps(request))
             result = pickle.loads(self._socket.recv())
         except zmq.Again as exc:
+            self._reset_socket()
             raise TimeoutError(
                 f"Timed out waiting for robot node at tcp://{self.host}:{self.port}"
             ) from exc
+        except zmq.ZMQError:
+            self._reset_socket()
+            raise
 
         if isinstance(result, dict) and "error" in result:
             raise RuntimeError(f"Robot node returned error: {result['error']}")
@@ -59,7 +72,9 @@ class RobotZMQClient:
         return self._request("get_observations")
 
     def close(self) -> None:
-        self._socket.close(0)
+        if self._socket is not None:
+            self._socket.close(0)
+            self._socket = None
         self._context.term()
 
     def __enter__(self):

@@ -178,6 +178,8 @@ def _filter_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path, camer
         "gripper": float(frame["gripper"]),
         "timestamp": float(frame["timestamp"]),
     }
+    if "schema_version" in frame:
+        filtered["schema_version"] = str(frame["schema_version"])
     for key in (
         "gripper_width",
         "gripper_command_raw",

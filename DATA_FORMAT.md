@@ -45,7 +45,8 @@ exterior_1.mp4
 exterior_2.mp4
 ```
 
-当前实现没有保存 `metadata.json`，也没有保存 depth 数据。
+当前 CLI 双臂和 GUI 会保存 `metadata.json`；新版 CLI 单臂也会保存
+`metadata.json`。当前没有保存 depth 数据。
 
 ## `pkl.gz` 顶层结构
 
@@ -86,6 +87,7 @@ keyframes = obj["keyframes"]
 
 ```python
 {
+    "schema_version": "franka_single_v1",
     "pose": [x, y, z, rx, ry, rz],
     "joint": [j1, j2, j3, j4, j5, j6, j7],
     "gripper": command,
@@ -110,6 +112,9 @@ keyframes = obj["keyframes"]
 "right_image"
 "exterior_1_image"
 ```
+
+`schema_version` 缺失的数据视为历史单臂格式；新版单臂数据使用
+`franka_single_v1`，双臂数据使用 `franka_dual_v1`。
 
 ## 字段含义
 
@@ -358,8 +363,8 @@ franka_capture/config/fr3_single.py
 `DEFAULT_CAMERAS` 动态决定。典型配置如下：
 
 ```python
-"left wrist": CameraConfig(
-    name="left wrist",
+"left_wrist": CameraConfig(
+    name="left_wrist",
     serial_number="348122072222",
     fps=30,
     depth=False,
@@ -367,8 +372,8 @@ franka_capture/config/fr3_single.py
 "left": CameraConfig(..., fps=30, depth=False),
 "middle": CameraConfig(..., fps=30, depth=False),
 "right": CameraConfig(..., fps=30, depth=False),
-"right wrist": CameraConfig(
-    name="right wrist",
+"right_wrist": CameraConfig(
+    name="right_wrist",
     serial_number="347622075798",
     fps=30,
     depth=False,
@@ -386,6 +391,33 @@ franka_capture/config/fr3_single.py
 ## 当前录制 FPS
 
 当前只有一种录制 FPS：`30 Hz`。GUI 和命令行录制入口都会固定使用这个频率。
+
+## 双臂采集格式
+
+双臂采集入口：
+
+```bash
+bash 15_record_bi_arm_pipeline.sh <task>
+```
+
+双臂 episode 使用 `schema_version = "franka_dual_v1"`，机器人字段使用显式前缀：
+
+```python
+{
+    "schema_version": "franka_dual_v1",
+    "frame_index": i,
+    "timestamp": unix_time,
+    "left_pose": [x, y, z, rx, ry, rz],
+    "left_joint": [j1, j2, j3, j4, j5, j6, j7],
+    "left_gripper": command,
+    "right_pose": [x, y, z, rx, ry, rz],
+    "right_joint": [j1, j2, j3, j4, j5, j6, j7],
+    "right_gripper": command,
+    "<camera_name>_image": image,
+}
+```
+
+双臂数据不会写单臂兼容的 `pose/joint/gripper` 顶层字段，避免旧转换器误把双臂 episode 当单臂数据处理。后续转换到 LeRobot/HDF5 时应使用双臂转换逻辑。
 
 ## 当前录制按键
 

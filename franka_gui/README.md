@@ -6,14 +6,22 @@
 ## 启动
 
 ```bash
-bash 14_run_capture_gui.sh
+bash A_run_single_arm_capture_gui.sh
 ```
 
 无硬件测试界面：
 
 ```bash
-bash 14_run_capture_gui.sh --mock
+bash A_run_single_arm_capture_gui.sh --mock
 ```
+
+双臂 GUI：
+
+```bash
+bash B_run_bi_arm_capture_gui.sh
+```
+
+`14_run_capture_gui.sh` 仅作为旧入口兼容，会转发到 A 单臂 GUI。
 
 默认保存到：
 
@@ -21,7 +29,9 @@ bash 14_run_capture_gui.sh --mock
 /home/pnp/Desktop/franka_record_data/<task>/<episode_index>/
 ```
 
-GUI 采集模式固定使用这个根目录。新增任务时只需要输入任务名称，GUI 会创建：
+GUI 采集模式固定使用这个根目录。A 单臂 GUI 固定使用
+`left_wrist/left/middle` 三路相机；B 双臂 GUI 使用全部配置相机。
+新增任务时只需要输入任务名称，GUI 会创建：
 
 ```text
 /home/pnp/Desktop/franka_record_data/<task>/
@@ -74,12 +84,14 @@ GUI 保存的数据保持和当前 `franka_capture` 兼容：
   <index>.pkl.gz
   keyframes.json
   metadata.json
+  preview_all.mp4
   <camera>.mp4
 ```
 
-`pkl.gz` 里每帧仍然包含：
+单臂 `pkl.gz` 里每帧包含：
 
 ```text
+schema_version
 pose
 joint
 gripper
@@ -88,6 +100,12 @@ gripper_target_width
 timestamp
 <camera_name>_image
 ```
+
+双臂 GUI 使用 `franka_dual_v1`，每帧保存 `left_*` 和 `right_*`
+机器人字段，并保存全部 `<camera_name>_image`。
+
+`preview_all.mp4` 是 GUI 额外保存的低分辨率横向拼接预览视频，用于快速回看；
+它不改变 `pkl.gz` 中的逐帧数据。
 
 `gripper` 为实际下发给 robot node 的二值闭合命令：`0=open, 1=closed`。
 `gripper_width` 为 Franka Hand 反馈的实际开口宽度，单位米。

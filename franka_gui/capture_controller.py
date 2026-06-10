@@ -5,16 +5,26 @@ from __future__ import annotations
 import queue
 import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
 
 from PyQt6 import QtCore
 
 from franka_capture.cameras.realsense import create_realsense_cameras
-from franka_capture.config.fr3_single import DEFAULT_CAMERAS, DEFAULT_ROBOT
+from franka_capture.config.fr3_dual import (
+    DEFAULT_LEFT_ROBOT,
+    DEFAULT_RIGHT_ROBOT,
+    DUAL_SCHEMA_VERSION,
+)
+from franka_capture.config.fr3_single import (
+    DEFAULT_CAMERAS,
+    DEFAULT_ROBOT,
+    SINGLE_SCHEMA_VERSION,
+)
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 
 from .async_episode_saver import AsyncEpisodeSaver, EpisodeSaveRequest
@@ -29,16 +39,27 @@ FIXED_CAPTURE_FPS = 30
 @dataclass
 class CaptureOptions:
     output_root: str
+    mode: str = "single"
+    camera_names: Optional[List[str]] = None
     camera_fps: int = FIXED_CAPTURE_FPS
     video_fps: int = FIXED_CAPTURE_FPS
     robot_host: str = DEFAULT_ROBOT.host
     robot_port: int = DEFAULT_ROBOT.port
     robot_timeout_ms: int = DEFAULT_ROBOT.timeout_ms
+    left_robot_host: str = DEFAULT_LEFT_ROBOT.host
+    left_robot_port: int = DEFAULT_LEFT_ROBOT.port
+    right_robot_host: str = DEFAULT_RIGHT_ROBOT.host
+    right_robot_port: int = DEFAULT_RIGHT_ROBOT.port
+    dual_robot_timeout_ms: int = DEFAULT_LEFT_ROBOT.timeout_ms
     mock: bool = False
 
     def __post_init__(self) -> None:
         self.camera_fps = FIXED_CAPTURE_FPS
         self.video_fps = FIXED_CAPTURE_FPS
+        if self.mode not in {"single", "dual"}:
+            raise ValueError(f"Unsupported capture mode: {self.mode}")
+        if self.camera_names is not None:
+            self.camera_names = [name for name in self.camera_names if name]
 
 
 @dataclass
@@ -75,7 +96,13 @@ class CaptureThread(QtCore.QThread):
         self._recording = False
         self._active: ActiveEpisode | None = None
         self._robot = None
+        self._left_robot = None
+        self._right_robot = None
         self._robot_warned = False
+        self._dual_read_executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="gui-dual-arm-read",
+        )
 
     def enqueue(self, command: str, **payload) -> None:
         self._commands.put((command, payload))
@@ -88,10 +115,12 @@ class CaptureThread(QtCore.QThread):
         cameras = {}
         try:
             if self.options.mock:
-                cameras = create_mock_cameras(["wrist", "left", "right"], self.options.camera_fps)
+                cameras = create_mock_cameras(_selected_camera_names(self.options), self.options.camera_fps)
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
             else:
-                cameras = create_realsense_cameras(_fixed_fps_camera_configs())
+                cameras = create_realsense_cameras(
+                    _fixed_fps_camera_configs(self.options.camera_names)
+                )
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
 
             camera_names = list(cameras.keys())
@@ -140,6 +169,13 @@ class CaptureThread(QtCore.QThread):
                     self._robot.close()
                 except Exception:
                     pass
+            for robot in (self._left_robot, self._right_robot):
+                if robot is not None:
+                    try:
+                        robot.close()
+                    except Exception:
+                        pass
+            self._dual_read_executor.shutdown(wait=False)
             self.status_changed.emit("相机预览已停止")
 
     def _drain_commands(self, camera_names: List[str], camera_metadata: Dict[str, Any]) -> None:
@@ -207,15 +243,16 @@ class CaptureThread(QtCore.QThread):
             video_fps=active.video_fps,
             metadata={
                 "source": "franka_gui",
+                "schema_version": (
+                    DUAL_SCHEMA_VERSION
+                    if self.options.mode == "dual"
+                    else SINGLE_SCHEMA_VERSION
+                ),
                 "task_description": active.task_description,
                 "user_metadata": active.user_metadata,
                 "started_at_unix": active.started_at,
                 "ended_at_unix": time.time(),
-                "robot": {
-                    "host": self.options.robot_host,
-                    "port": self.options.robot_port,
-                    "timeout_ms": self.options.robot_timeout_ms,
-                },
+                **self._robot_metadata(),
                 "gripper_semantics": GRIPPER_BINARY_SEMANTICS,
                 "gripper_values": {"0": "open", "1": "closed"},
                 "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
@@ -226,6 +263,30 @@ class CaptureThread(QtCore.QThread):
             },
         )
         self.episode_ready.emit(request)
+
+    def _robot_metadata(self) -> Dict[str, Any]:
+        if self.options.mode == "dual":
+            return {
+                "robots": {
+                    "left": {
+                        "host": self.options.left_robot_host,
+                        "port": self.options.left_robot_port,
+                        "timeout_ms": self.options.dual_robot_timeout_ms,
+                    },
+                    "right": {
+                        "host": self.options.right_robot_host,
+                        "port": self.options.right_robot_port,
+                        "timeout_ms": self.options.dual_robot_timeout_ms,
+                    },
+                }
+            }
+        return {
+            "robot": {
+                "host": self.options.robot_host,
+                "port": self.options.robot_port,
+                "timeout_ms": self.options.robot_timeout_ms,
+            }
+        }
 
     def _discard(self) -> None:
         if self._active is None:
@@ -245,6 +306,11 @@ class CaptureThread(QtCore.QThread):
         self.status_changed.emit(f"已添加关键帧: episode {self._active.index}, frame {keyframe}")
 
     def _build_record_frame(self, rgb_frames: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        if self.options.mode == "dual":
+            return self._build_dual_record_frame(rgb_frames)
+        return self._build_single_record_frame(rgb_frames)
+
+    def _build_single_record_frame(self, rgb_frames: Dict[str, np.ndarray]) -> Dict[str, Any]:
         robot = self._ensure_robot()
         robot_observations = robot.get_observations()
         joint_state = robot.get_joint_state()
@@ -277,6 +343,7 @@ class CaptureThread(QtCore.QThread):
             )
         )
         frame = {
+            "schema_version": SINGLE_SCHEMA_VERSION,
             "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
             "joint": _as_saved_value(joint_state[:7]),
             "gripper": gripper_command,
@@ -287,6 +354,33 @@ class CaptureThread(QtCore.QThread):
             "gripper_command_source": robot_observations.get("gripper_command_source", ""),
             "timestamp": time.time(),
         }
+        for name, rgb in rgb_frames.items():
+            frame[f"{name}_image"] = rgb[:, :, ::-1].copy()
+        return frame
+
+    def _build_dual_record_frame(self, rgb_frames: Dict[str, np.ndarray]) -> Dict[str, Any]:
+        left_robot, right_robot = self._ensure_dual_robots()
+        loop_start_monotonic = time.monotonic()
+        loop_start_timestamp = time.time()
+        left_future = self._dual_read_executor.submit(_fetch_arm_state, left_robot)
+        right_future = self._dual_read_executor.submit(_fetch_arm_state, right_robot)
+        left_state = left_future.result()
+        right_state = right_future.result()
+        loop_end_monotonic = time.monotonic()
+        timestamp = time.time()
+
+        frame = {
+            "schema_version": DUAL_SCHEMA_VERSION,
+            "frame_index": len(self._active.frames) if self._active is not None else 0,
+            "timestamp": timestamp,
+            "loop_start_timestamp": loop_start_timestamp,
+            "loop_end_timestamp": timestamp,
+            "loop_start_monotonic": loop_start_monotonic,
+            "loop_end_monotonic": loop_end_monotonic,
+            "loop_duration_ms": (loop_end_monotonic - loop_start_monotonic) * 1000.0,
+        }
+        _add_prefixed_fields(frame, "left", left_state)
+        _add_prefixed_fields(frame, "right", right_state)
         for name, rgb in rgb_frames.items():
             frame[f"{name}_image"] = rgb[:, :, ::-1].copy()
         return frame
@@ -312,6 +406,30 @@ class CaptureThread(QtCore.QThread):
                 self._robot_warned = True
                 self.error.emit(f"robot node DOF={dofs}，预期单臂+夹爪为 8。")
         return self._robot
+
+    def _ensure_dual_robots(self):
+        if self.options.mock:
+            if self._left_robot is None:
+                self._left_robot = MockRobot()
+            if self._right_robot is None:
+                self._right_robot = MockRobot()
+            return self._left_robot, self._right_robot
+
+        if self._left_robot is None:
+            self._left_robot = _connect_checked_robot(
+                self.options.left_robot_host,
+                self.options.left_robot_port,
+                self.options.dual_robot_timeout_ms,
+                "left",
+            )
+        if self._right_robot is None:
+            self._right_robot = _connect_checked_robot(
+                self.options.right_robot_host,
+                self.options.right_robot_port,
+                self.options.dual_robot_timeout_ms,
+                "right",
+            )
+        return self._left_robot, self._right_robot
 
 
 class CaptureController(QtCore.QObject):
@@ -521,13 +639,104 @@ class CaptureController(QtCore.QObject):
         self.error.emit(f"保存失败: {task}/{index}\n{error}")
 
 
-def _fixed_fps_camera_configs():
+def _selected_camera_names(options: CaptureOptions) -> List[str]:
+    if options.camera_names:
+        return list(options.camera_names)
+    return list(DEFAULT_CAMERAS.keys())
+
+
+def _fixed_fps_camera_configs(camera_names: Optional[Sequence[str]] = None):
     from dataclasses import replace
 
+    names = list(camera_names) if camera_names else list(DEFAULT_CAMERAS.keys())
+    missing = [name for name in names if name not in DEFAULT_CAMERAS]
+    if missing:
+        raise KeyError(f"Unknown configured camera name(s): {missing}")
     return {
-        name: replace(config, fps=FIXED_CAPTURE_FPS)
-        for name, config in DEFAULT_CAMERAS.items()
+        name: replace(DEFAULT_CAMERAS[name], fps=FIXED_CAPTURE_FPS)
+        for name in names
     }
+
+
+def _connect_checked_robot(host: str, port: int, timeout_ms: int, label: str):
+    robot = RobotZMQClient(host, port, timeout_ms=timeout_ms)
+    try:
+        dofs = robot.num_dofs()
+    except Exception:
+        robot.close()
+        raise
+    if dofs != 8:
+        robot.close()
+        raise RuntimeError(f"{label} robot node DOF={dofs}，预期单臂+夹爪为 8。")
+    return robot
+
+
+def _fetch_arm_state(robot: RobotZMQClient) -> Dict[str, Any]:
+    start_wall = time.time()
+    start_monotonic = time.monotonic()
+    robot_observations = robot.get_observations()
+    joint_state = robot.get_joint_state()
+    end_monotonic = time.monotonic()
+    end_wall = time.time()
+
+    state = _extract_arm_state(robot_observations, joint_state)
+    state.update(
+        {
+            "robot_read_start_timestamp": start_wall,
+            "robot_read_end_timestamp": end_wall,
+            "robot_read_start_monotonic": start_monotonic,
+            "robot_read_end_monotonic": end_monotonic,
+            "robot_read_duration_ms": (end_monotonic - start_monotonic) * 1000.0,
+        }
+    )
+    return state
+
+
+def _extract_arm_state(robot_observations: Dict[str, Any], joint_state: Any) -> Dict[str, Any]:
+    if "ee_pose_euler" not in robot_observations:
+        raise RuntimeError(
+            "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
+        )
+    if "gripper_command" not in robot_observations:
+        raise RuntimeError(
+            "robot node 缺少 gripper_command，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
+        )
+
+    gripper_command_value = _as_scalar(robot_observations["gripper_command"])
+    gripper_command = _as_binary_gripper_command(gripper_command_value)
+    gripper_command_raw = _as_scalar(
+        robot_observations.get("gripper_command_raw", gripper_command_value)
+    )
+    gripper_target_width = _as_scalar(
+        robot_observations.get(
+            "gripper_target_width",
+            MAX_GRIPPER_WIDTH * (1.0 - gripper_command_raw),
+        )
+    )
+    gripper_command_timestamp = _as_scalar(
+        robot_observations.get("gripper_command_timestamp", time.time())
+    )
+    gripper_width = _as_scalar(
+        robot_observations.get(
+            "gripper_width",
+            joint_state[-1] * MAX_GRIPPER_WIDTH,
+        )
+    )
+    return {
+        "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
+        "joint": _as_saved_value(joint_state[:7]),
+        "gripper": gripper_command,
+        "gripper_width": gripper_width,
+        "gripper_command_raw": gripper_command_raw,
+        "gripper_target_width": gripper_target_width,
+        "gripper_command_timestamp": gripper_command_timestamp,
+        "gripper_command_source": robot_observations.get("gripper_command_source", ""),
+    }
+
+
+def _add_prefixed_fields(frame: Dict[str, Any], prefix: str, values: Dict[str, Any]) -> None:
+    for key, value in values.items():
+        frame[f"{prefix}_{key}"] = value
 
 
 def _valid_keyframes(keyframes: List[int], frame_count: int) -> List[int]:

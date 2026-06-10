@@ -5,7 +5,7 @@ import json
 import pickle
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 import numpy as np
 
@@ -75,6 +75,7 @@ class EpisodeWriter:
         index: int,
         camera_names: Iterable[str],
         video_fps: int,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.output_root = Path(output_root).expanduser()
         self.task = task
@@ -85,6 +86,7 @@ class EpisodeWriter:
         self.camera_names = list(camera_names)
         self.frames: List[Dict[str, Any]] = []
         self.keyframes: List[int] = [0]
+        self.metadata = dict(metadata) if metadata is not None else None
         self._closed = False
 
         self._writers = _create_video_writers(
@@ -108,6 +110,11 @@ class EpisodeWriter:
             self.keyframes.append(keyframe)
         return keyframe
 
+    def update_metadata(self, values: Dict[str, Any]) -> None:
+        if self.metadata is None:
+            self.metadata = {}
+        self.metadata.update(values)
+
     def close_videos(self) -> None:
         for writer in self._writers.values():
             writer.close()
@@ -130,6 +137,23 @@ class EpisodeWriter:
         keyframes_path = self.output_dir / "keyframes.json"
         with keyframes_path.open("w", encoding="utf-8") as f:
             json.dump({"keyframes": self.keyframes}, f, ensure_ascii=False, indent=2)
+
+        if self.metadata is not None:
+            metadata = dict(self.metadata)
+            metadata.update(
+                {
+                    "task": self.task,
+                    "index": self.index,
+                    "frame_count": len(self.frames),
+                    "camera_names": self.camera_names,
+                    "video_fps": self.video_fps,
+                    "keyframes": self.keyframes,
+                }
+            )
+            metadata_path = self.output_dir / "metadata.json"
+            with metadata_path.open("w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+                f.write("\n")
 
         self._closed = True
         return self.output_dir

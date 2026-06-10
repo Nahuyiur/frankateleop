@@ -41,6 +41,7 @@ class Args:
     data_dir: str = "~/bc_data"
     bimanual: bool = False
     verbose: bool = False
+    check_only: bool = False
 
 
 def main(args):
@@ -125,13 +126,20 @@ def main(args):
             agent = TeleopAgent(port=teleop_port, start_joints=args.start_joints)
             curr_joints = env.get_obs()["joint_positions"]
             curr_joints = np.array(curr_joints)
-            if reset_joints.shape == curr_joints.shape:
+            if args.check_only:
+                print("Skipping reset_joints in check-only mode")
+            elif reset_joints.shape == curr_joints.shape:
                 max_delta = (np.abs(curr_joints - reset_joints)).max()
                 steps = min(int(max_delta / 0.01), 100)
 
                 for jnt in np.linspace(curr_joints, reset_joints, steps):
                     env.step(jnt)
                     time.sleep(0.001)
+            else:
+                print(
+                    "Skipping reset_joints because shape does not match robot state: "
+                    f"reset_joints={reset_joints.shape}, robot_joints={curr_joints.shape}"
+                )
         elif args.agent == "quest":
             from teleop.agents.quest_agent import SingleArmQuestAgent
 
@@ -172,12 +180,16 @@ def main(args):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
             )
-        return
+        raise SystemExit(1)
 
     print(f"Start pos: {len(start_pos)}", f"Joints: {len(joints)}")
     assert len(start_pos) == len(
         joints
     ), f"agent output dim = {len(start_pos)}, but env dim = {len(joints)}"
+
+    if args.check_only:
+        print("Teleop alignment check passed.")
+        return
 
     max_delta = 0.05
     for _ in range(25):

@@ -259,6 +259,7 @@ keyframes.json
 每一帧数据包含：
 
 ```text
+schema_version
 pose
 joint
 gripper

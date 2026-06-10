@@ -91,7 +91,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fixed_output_root = str(Path.home() / "Desktop" / "franka_record_data")
         self.controller.options.output_root = self._fixed_output_root
 
-        self.setWindowTitle("Franka GUI Capture")
+        self.setWindowTitle(
+            "Franka Dual-Arm Capture"
+            if self.controller.options.mode == "dual"
+            else "Franka Single-Arm Capture"
+        )
+        self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.resize(1380, 840)
         self._build_ui()
         self._connect_signals()
@@ -103,6 +108,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disk_timer.start(5000)
 
         QtCore.QTimer.singleShot(250, self.controller.start_preview)
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
         if self._episode_state in {"recording", "paused"}:
@@ -124,9 +132,39 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self.controller.shutdown()
         self.process_manager.stop_stack_blocking()
+        app = QtWidgets.QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
         event.accept()
 
+    def eventFilter(self, obj, event) -> bool:
+        if QtWidgets.QApplication.activeModalWidget() is not None:
+            return super().eventFilter(obj, event)
+        widget = obj if isinstance(obj, QtWidgets.QWidget) else None
+        if widget is not None and widget.window() is not self:
+            return super().eventFilter(obj, event)
+
+        if event.type() == QtCore.QEvent.Type.MouseButtonPress:
+            self._release_text_focus_if_needed(widget)
+        elif event.type() == QtCore.QEvent.Type.KeyPress:
+            if self._handle_capture_shortcut(event):
+                return True
+        return super().eventFilter(obj, event)
+
     def keyPressEvent(self, event: QtGui.QKeyEvent) -> None:
+        if not self._handle_capture_shortcut(event):
+            super().keyPressEvent(event)
+
+    def _handle_capture_shortcut(self, event: QtGui.QKeyEvent) -> bool:
+        if event.modifiers() & (
+            QtCore.Qt.KeyboardModifier.ControlModifier
+            | QtCore.Qt.KeyboardModifier.AltModifier
+            | QtCore.Qt.KeyboardModifier.MetaModifier
+        ):
+            return False
+        if _is_text_input_widget(QtWidgets.QApplication.focusWidget()):
+            return False
+
         key = event.key()
         if key == QtCore.Qt.Key.Key_S:
             self._start_recording()
@@ -141,7 +179,17 @@ class MainWindow(QtWidgets.QMainWindow):
         elif key == QtCore.Qt.Key.Key_Q:
             self.controller.finish()
         else:
-            super().keyPressEvent(event)
+            return False
+        event.accept()
+        return True
+
+    def _release_text_focus_if_needed(self, clicked_widget: Optional[QtWidgets.QWidget]) -> None:
+        if clicked_widget is not None and _is_text_input_widget(clicked_widget):
+            return
+        focus_widget = QtWidgets.QApplication.focusWidget()
+        if _is_text_input_widget(focus_widget):
+            focus_widget.clearFocus()
+            self.setFocus(QtCore.Qt.FocusReason.MouseFocusReason)
 
     def _build_ui(self) -> None:
         central = QtWidgets.QWidget()
@@ -293,7 +341,11 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(10)
 
-        app_title = QtWidgets.QLabel("FR3 Capture")
+        app_title = QtWidgets.QLabel(
+            "FR3 Dual Capture"
+            if self.controller.options.mode == "dual"
+            else "FR3 Single Capture"
+        )
         app_title.setObjectName("AppTitle")
         layout.addWidget(app_title)
         layout.addWidget(AccentBar("Blue"))
@@ -302,7 +354,11 @@ class MainWindow(QtWidgets.QMainWindow):
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
 
-        self.start_stack_btn = QtWidgets.QPushButton("启动 1-4")
+        self.start_stack_btn = QtWidgets.QPushButton(
+            "启动双臂 1-4"
+            if self.process_manager.mode == "dual"
+            else "启动 1-4"
+        )
         self.start_stack_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
         self.stop_stack_btn = QtWidgets.QPushButton("停止全部")
         self.stop_stack_btn.setObjectName("Danger")
@@ -530,12 +586,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self.camera_grid.setRowStretch(row, 0)
 
         preferred_positions = {
-            "left": (0, 0, 1, 1),
-            "right": (0, 1, 1, 1),
-            "wrist": (1, 0, 1, 2),
+            "left_wrist": (0, 0, 1, 1),
+            "left": (0, 1, 1, 1),
+            "middle": (1, 0, 1, 2),
+            "right": (2, 0, 1, 1),
+            "right_wrist": (2, 1, 1, 1),
         }
         placed = set()
-        for name in ("left", "right", "wrist"):
+        for name in ("left_wrist", "left", "middle", "right", "right_wrist"):
             view = self.camera_views.get(name)
             if view is None:
                 continue
@@ -730,6 +788,25 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f}{unit}"
         size /= 1024.0
     return f"{size:.1f}TB"
+
+
+def _is_text_input_widget(widget: Optional[QtWidgets.QWidget]) -> bool:
+    while widget is not None:
+        if isinstance(
+            widget,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QSpinBox,
+                QtWidgets.QDoubleSpinBox,
+            ),
+        ):
+            return True
+        if isinstance(widget, QtWidgets.QComboBox) and widget.isEditable():
+            return True
+        widget = widget.parentWidget()
+    return False
 
 
 def _is_valid_task_name(task: str) -> bool:

@@ -11,6 +11,7 @@ from franka_capture.config.fr3_single import (
     DEFAULT_CAMERAS,
     DEFAULT_RECORDING,
     DEFAULT_ROBOT,
+    SINGLE_SCHEMA_VERSION,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 from franka_capture.recording.episode_writer import EpisodeWriter
@@ -100,6 +101,19 @@ def main() -> None:
                 index=next_index,
                 camera_names=camera_names,
                 video_fps=FIXED_RECORDING_FPS,
+                metadata={
+                    "source": "franka_capture.scripts.record_fr3",
+                    "schema_version": SINGLE_SCHEMA_VERSION,
+                    "started_at_unix": time.time(),
+                    "robot": {
+                        "host": args.host,
+                        "port": args.port,
+                        "timeout_ms": args.timeout_ms,
+                    },
+                    "gripper_semantics": "binary_closedness_command",
+                    "gripper_values": {"0": "open", "1": "closed"},
+                    "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
+                },
             )
             print(f"Start recording episode {next_index}: {writer.output_dir}")
             next_index += 1
@@ -114,6 +128,7 @@ def main() -> None:
                 print("No active episode to save")
             return
         record_flag = False
+        writer.update_metadata({"ended_at_unix": time.time()})
         output_dir = writer.finish()
         print(f"Saved {len(writer.frames)} frames to {output_dir}")
         writer = None
@@ -222,6 +237,7 @@ def main() -> None:
                 )
             )
             frame = {
+                "schema_version": SINGLE_SCHEMA_VERSION,
                 "pose": _as_saved_value(pose),
                 "joint": _as_saved_value(joint_state[:7]),
                 "gripper": gripper_command,
