@@ -79,7 +79,13 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
         serial_number="347622075798",
         fps=30,
         depth=False,
-    )
+    ),
+    # "front": CameraConfig(
+    #     name="front",
+    #     serial_number="401622071099",
+    #     fps=30,
+    #     depth=False,
+    # )
 }
 
 DEFAULT_RECORDING = RecordingConfig()

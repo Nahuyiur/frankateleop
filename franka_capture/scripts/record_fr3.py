@@ -215,11 +215,17 @@ def main() -> None:
             gripper_command_timestamp = _as_scalar(
                 robot_observations.get("gripper_command_timestamp", time.time())
             )
+            gripper_width = _as_scalar(
+                robot_observations.get(
+                    "gripper_width",
+                    joint_state[-1] * MAX_GRIPPER_WIDTH,
+                )
+            )
             frame = {
                 "pose": _as_saved_value(pose),
                 "joint": _as_saved_value(joint_state[:7]),
                 "gripper": gripper_command,
-                "gripper_width": float(joint_state[-1] * MAX_GRIPPER_WIDTH),
+                "gripper_width": gripper_width,
                 "gripper_command_raw": gripper_command_raw,
                 "gripper_target_width": gripper_target_width,
                 "gripper_command_timestamp": gripper_command_timestamp,

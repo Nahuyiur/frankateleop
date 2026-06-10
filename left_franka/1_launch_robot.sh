@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 echo ">>> 激活 conda 环境 polymetis ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate polymetis || { echo "❌ 激活失败"; exit 1; }
@@ -32,7 +35,7 @@ fi
 
 echo "✅ 端口清理步骤完成"
 
-POLY_ROOT="../polymetis"
+POLY_ROOT="$REPO_ROOT/polymetis"
 echo "📝 调试信息：POLY_ROOT=$POLY_ROOT"
 
 WORK_DIR="$POLY_ROOT/polymetis/python/polymetis"
@@ -49,4 +52,3 @@ cd "$WORK_DIR" || { echo "❌ 无法进入工作目录 $WORK_DIR"; exit 1; }
 echo "📝 调试信息：当前工作目录=$(pwd)"
 
 launch_robot.py --config-name=launch_left_robot
-

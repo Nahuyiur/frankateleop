@@ -4,7 +4,9 @@
 #include <string>
 #include <thread>
 #include <time.h>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 
 #include <grpc/grpc.h>
 
@@ -13,7 +15,7 @@
 
 using grpc::ClientContext;
 
-constexpr float kMinCommandWidthDeltaMeters = 0.01;
+constexpr float kMinCommandWidthDeltaMeters = 0.045;
 
 FrankaHandClient::FrankaHandClient(std::shared_ptr<grpc::Channel> channel,
                                    YAML::Node config)
@@ -60,19 +62,15 @@ void FrankaHandClient::applyGripperCommand(GripperCommand gripper_cmd) {
   if (gripper_cmd.grasp()) {
     spdlog::info("Grasping at width {} at speed={}", gripper_cmd.width(),
                  gripper_cmd.speed());
-    /*
-    double eps_inner = (gripper_cmd_.epsilon_inner() < 0)
+    double eps_inner = (gripper_cmd.epsilon_inner() < 0)
                            ? EPSILON_INNER
-                           : gripper_cmd_.epsilon_inner();
-    double eps_outer = (gripper_cmd_.epsilon_outer() < 0)
+                           : gripper_cmd.epsilon_inner();
+    double eps_outer = (gripper_cmd.epsilon_outer() < 0)
                            ? EPSILON_OUTER
-                           : gripper_cmd_.epsilon_outer();
-                           */
-    double eps_inner = 0.1;
-    double eps_outer = 0.1;
+                           : gripper_cmd.epsilon_outer();
     prev_cmd_successful_ =
         gripper_->grasp(gripper_cmd.width(), gripper_cmd.speed(),
-                        eps_inner, eps_outer, gripper_cmd.force());
+                        gripper_cmd.force(), eps_inner, eps_outer);
 
   } else {
     spdlog::info("Moving to width {} at speed={}", gripper_cmd.width(),
@@ -85,15 +83,12 @@ void FrankaHandClient::applyGripperCommand(GripperCommand gripper_cmd) {
 }
 
 void FrankaHandClient::run(void) {
-  int period = 1.0 / GRIPPER_HZ;
-  int period_ns = period * 1.0e9;
+  const int64_t period_ns = 1000000000LL / GRIPPER_HZ;
 
   int timestamp_s;
   int timestamp_ns;
   float cmd_width;
 
-  struct timespec abs_target_time;
-  clock_gettime(CLOCK_REALTIME, &abs_target_time);
   while (true) {
     // Run control step
     getGripperState();
@@ -123,8 +118,7 @@ void FrankaHandClient::run(void) {
     }
 
     // Spin once
-    abs_target_time.tv_nsec += period_ns;
-    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &abs_target_time, nullptr);
+    std::this_thread::sleep_for(std::chrono::nanoseconds(period_ns));
   }
 }
 

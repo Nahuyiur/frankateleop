@@ -9,7 +9,7 @@ class DualGripperServer:
         self._mock_right_gripper = {"width": 0.085, "is_grasped": False}
         # 连接两个 gripper server
         try:
-            self.gripper1 = GripperInterface(ip_address="localhost", port=50052)
+            self.gripper1 = GripperInterface(ip_address="localhost", port=50054)
             self.gripper2 = GripperInterface(ip_address="localhost", port=50053)
             print("成功连接到夹爪服务器")
         except Exception as e:

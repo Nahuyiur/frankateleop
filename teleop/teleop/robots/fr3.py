@@ -1,3 +1,4 @@
+import os
 import time
 import torch
 from typing import Dict
@@ -6,6 +7,9 @@ import numpy as np
 from teleop.robots.robot import Robot
 
 MAX_OPEN = 0.09
+GRIPPER_SPEED = 0.1
+GRIPPER_FORCE = 20.0
+GRIPPER_DEBUG_INTERVAL = 0.5
 GRIPPER_COMMAND_THRESHOLD = 0.5
 
 
@@ -34,6 +38,7 @@ class fr3Robot(Robot):
             ip_address=robot_ip,
             port=frankahand_port,
         )
+        self._max_gripper_width = self._get_gripper_max_width()
         if joint_positions_desired is None and home_on_init:
             self.robot.go_home()
         elif joint_positions_desired is None:
@@ -48,19 +53,30 @@ class fr3Robot(Robot):
         self.control_mode = control_mode
         self._last_gripper_command = 0.0
         self._last_gripper_command_raw = 0.0
-        self._last_gripper_target_width = MAX_OPEN
+        self._last_gripper_target_width = self._max_gripper_width
         self._last_gripper_command_timestamp = time.time()
         self._last_gripper_command_source = "init"
         self._start_control_mode(control_mode)
+        self._debug_gripper = os.environ.get("TELEOP_DEBUG_GRIPPER", "").lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        self._last_gripper_debug_time = 0.0
         if open_gripper_on_init:
-            self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
-            self._remember_gripper_command(0.0, MAX_OPEN, "init_open")
+            self.gripper.goto(
+                width=self._max_gripper_width,
+                speed=GRIPPER_SPEED,
+                force=GRIPPER_FORCE,
+            )
+            self._remember_gripper_command(0.0, self._max_gripper_width, "init_open")
             time.sleep(1)
         else:
             print("Skipping gripper open on init.")
             try:
-                width = float(np.clip(self.gripper.get_state().width, 0.0, MAX_OPEN))
-                closedness = 1.0 - width / MAX_OPEN
+                width = float(np.clip(self.gripper.get_state().width, 0.0, self._max_gripper_width))
+                closedness = 1.0 - width / self._max_gripper_width
                 self._remember_gripper_command(closedness, width, "init_feedback")
             except Exception as exc:
                 print(f"Could not initialize cached gripper command from feedback: {exc}")
@@ -72,6 +88,27 @@ class fr3Robot(Robot):
             self.robot.start_cartesian_impedance()
         else:
             raise ValueError(f"Unsupported fr3 control_mode: {control_mode}")
+
+    def _ensure_joint_controller_running(self) -> None:
+        if self.control_mode != "joint":
+            return
+        try:
+            if self.robot.is_running_policy():
+                return
+        except Exception as exc:
+            print(f"Unable to check robot controller state: {exc}")
+
+        print("Joint impedance controller is not running; starting it.")
+        self.robot.start_joint_impedance()
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            try:
+                if self.robot.is_running_policy():
+                    return
+            except Exception:
+                pass
+            time.sleep(0.02)
+        print("Warning: joint impedance controller did not report running yet.")
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -92,14 +129,14 @@ class fr3Robot(Robot):
         """
         robot_joints = self.robot.get_joint_positions()
         gripper_pos = self.gripper.get_state()
-        pos = np.append(robot_joints, gripper_pos.width / MAX_OPEN)
+        pos = np.append(robot_joints, gripper_pos.width / self._max_gripper_width)
         return pos
 
     def command_joint_state(
             self,
             joint_state: np.ndarray,
-            gripper_speed: float = 1,
-            gripper_force: float = 1,
+            gripper_speed: float = GRIPPER_SPEED,
+            gripper_force: float = GRIPPER_FORCE,
             update_gripper: bool = True,
             ) -> None:
         """Command the leader robot to a given state.
@@ -109,17 +146,52 @@ class fr3Robot(Robot):
         """
         import torch
 
-        self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
+        self._ensure_joint_controller_running()
+        desired_joints = torch.tensor(joint_state[:-1])
+        try:
+            self.robot.update_desired_joint_positions(desired_joints)
+        except Exception as exc:
+            if "no controller running" not in str(exc):
+                raise
+            print("Joint controller was missing during update; restarting and retrying.")
+            self.robot.start_joint_impedance()
+            time.sleep(0.1)
+            self.robot.update_desired_joint_positions(desired_joints)
         if update_gripper:
-            closedness = float(np.clip(joint_state[-1], 0.0, 1.0))
-            target_width = MAX_OPEN * (1.0 - closedness)
+            raw_gripper_action = float(joint_state[-1])
+            if not np.isfinite(raw_gripper_action):
+                raise ValueError(f"Invalid gripper action: {raw_gripper_action}")
+            gripper_action = float(np.clip(raw_gripper_action, 0.0, 1.0))
+            target_width = float(
+                np.clip(
+                    self._max_gripper_width * (1.0 - gripper_action),
+                    0.0,
+                    self._max_gripper_width,
+                )
+            )
+            self._debug_gripper_command(
+                raw_gripper_action,
+                gripper_action,
+                target_width,
+                gripper_speed,
+                gripper_force,
+                phase="before",
+            )
             self.gripper.goto(
                 width=target_width,
                 speed=gripper_speed,
                 force=gripper_force,
             )
+            self._debug_gripper_command(
+                raw_gripper_action,
+                gripper_action,
+                target_width,
+                gripper_speed,
+                gripper_force,
+                phase="after",
+            )
             self._remember_gripper_command(
-                closedness,
+                gripper_action,
                 target_width,
                 "command_joint_state",
             )
@@ -147,8 +219,8 @@ class fr3Robot(Robot):
             raise RuntimeError(f"Franka IK failed for pose_6d={pose.tolist()}")
 
         if update_gripper:
-            width = float(np.clip(gripper_width, 0.0, MAX_OPEN))
-            closedness = 1.0 - width / MAX_OPEN
+            width = float(np.clip(gripper_width, 0.0, self._max_gripper_width))
+            closedness = 1.0 - width / self._max_gripper_width
             self.gripper.goto(
                 width=width,
                 speed=gripper_speed,
@@ -159,6 +231,62 @@ class fr3Robot(Robot):
                 width,
                 "command_ee_pose",
             )
+
+    def _debug_gripper_command(
+        self,
+        raw_gripper_action: float,
+        gripper_action: float,
+        target_width: float,
+        gripper_speed: float,
+        gripper_force: float,
+        phase: str,
+    ) -> None:
+        if not self._debug_gripper:
+            return
+        now = time.time()
+        if now - self._last_gripper_debug_time < GRIPPER_DEBUG_INTERVAL:
+            return
+        self._last_gripper_debug_time = now
+        try:
+            gripper_state = self.gripper.get_state()
+            current_width = float(gripper_state.width)
+            current_width_msg = f"{current_width:.4f}"
+            state_msg = (
+                f"is_moving={getattr(gripper_state, 'is_moving', 'unknown')} "
+                f"is_grasped={getattr(gripper_state, 'is_grasped', 'unknown')} "
+                "prev_command_successful="
+                f"{getattr(gripper_state, 'prev_command_successful', 'unknown')}"
+            )
+        except Exception as exc:
+            current_width_msg = f"unavailable ({type(exc).__name__}: {exc})"
+            state_msg = "state=unavailable"
+        print(
+            "[fr3 gripper] "
+            f"phase={phase} "
+            f"action_raw={raw_gripper_action:.3f} "
+            f"action_clipped={gripper_action:.3f} "
+            f"target_width={target_width:.4f} "
+            f"current_width={current_width_msg} "
+            f"speed={gripper_speed} force={gripper_force} "
+            f"{state_msg}"
+        )
+
+    def _get_gripper_max_width(self) -> float:
+        max_width = MAX_OPEN
+        metadata = getattr(self.gripper, "metadata", None)
+        if metadata is not None and hasattr(metadata, "max_width"):
+            try:
+                max_width = float(metadata.max_width)
+            except Exception:
+                max_width = MAX_OPEN
+        else:
+            try:
+                max_width = float(self.gripper.get_state().max_width)
+            except Exception:
+                max_width = MAX_OPEN
+        if not np.isfinite(max_width) or max_width <= 0:
+            max_width = MAX_OPEN
+        return max_width
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
@@ -172,12 +300,14 @@ class fr3Robot(Robot):
         ee_euler = Rotation.from_quat(ee_quat).as_euler("xyz", degrees=False)
         pos_euler = np.concatenate([ee_pos, ee_euler])
         gripper_pos = np.array([joints[-1]])
+        gripper_width = float(joints[-1] * self._max_gripper_width)
         return {
             "joint_positions": joints,
             "joint_velocities": joints,
             "ee_pos_quat": pos_quat,
             "ee_pose_euler": pos_euler,
             "gripper_position": gripper_pos,
+            "gripper_width": np.array([gripper_width], dtype=np.float32),
             "gripper_command": np.array([self._last_gripper_command], dtype=np.float32),
             "gripper_command_raw": np.array([self._last_gripper_command_raw], dtype=np.float32),
             "gripper_target_width": np.array([self._last_gripper_target_width], dtype=np.float32),
@@ -192,9 +322,10 @@ class fr3Robot(Robot):
             source: str,
             ) -> None:
         closedness = float(np.clip(closedness, 0.0, 1.0))
+        max_width = getattr(self, "_max_gripper_width", MAX_OPEN)
         self._last_gripper_command_raw = closedness
         self._last_gripper_command = 1.0 if closedness >= GRIPPER_COMMAND_THRESHOLD else 0.0
-        self._last_gripper_target_width = float(np.clip(target_width, 0.0, MAX_OPEN))
+        self._last_gripper_target_width = float(np.clip(target_width, 0.0, max_width))
         self._last_gripper_command_timestamp = time.time()
         self._last_gripper_command_source = source
 
@@ -207,12 +338,12 @@ def main():
     # make last joint (gripper) closed
     move_joints[-1] = 0.5
     time.sleep(1)
-    m = 0.09
-    robot.gripper.goto(1 * m, speed=255, force=255)
+    m = robot._max_gripper_width
+    robot.gripper.goto(1 * m, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
     time.sleep(1)
-    robot.gripper.goto(1.05 * m, speed=255, force=255)
+    robot.gripper.goto(1.05 * m, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
     time.sleep(1)
-    robot.gripper.goto(1.1 * m, speed=255, force=255)
+    robot.gripper.goto(1.1 * m, speed=GRIPPER_SPEED, force=GRIPPER_FORCE)
     time.sleep(1)
 
 

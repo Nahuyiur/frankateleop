@@ -1,11 +1,14 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
 echo ">>> 激活 conda 环境 polymetis ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate polymetis || { echo "❌ 激活失败"; exit 1; }
 
-POLY_ROOT="../polymetis"
+POLY_ROOT="$REPO_ROOT/polymetis"
 
 WORK_DIR="$POLY_ROOT/polymetis/python/polymetis"
 if [[ ! -d "$WORK_DIR/conf" ]]; then
