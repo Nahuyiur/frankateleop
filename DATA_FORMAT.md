@@ -87,10 +87,11 @@ keyframes = obj["keyframes"]
 
 ```python
 {
-    "schema_version": "franka_single_v1",
+    "schema_version": "franka_single_v2",
     "pose": [x, y, z, rx, ry, rz],
     "joint": [j1, j2, j3, j4, j5, j6, j7],
-    "gripper": command,
+    "gripper_closedness": continuous_closedness,
+    "gripper_01closedness": binary_closedness,
     "gripper_width": actual_width,
     "gripper_target_width": target_width,
     "timestamp": unix_time,
@@ -113,8 +114,8 @@ keyframes = obj["keyframes"]
 "exterior_1_image"
 ```
 
-`schema_version` 缺失的数据视为历史单臂格式；新版单臂数据使用
-`franka_single_v1`，双臂数据使用 `franka_dual_v1`。
+`schema_version` 缺失的数据视为历史单臂格式；当前新版单臂数据使用
+`franka_single_v2`，双臂数据使用 `franka_dual_v2`。旧 v1 数据仍可由转换和 replay 工具读取。
 
 ## 字段含义
 
@@ -184,56 +185,44 @@ xyz
 joint_state[:7]
 ```
 
-### `gripper`
+### Gripper 字段
 
-维度：
-
-```text
-1
-```
-
-格式：
+新数据每帧只保存四个夹爪字段：
 
 ```text
-command
+gripper_closedness
+gripper_01closedness
+gripper_width
+gripper_target_width
 ```
 
-含义：
-
-- 实际下发给 robot node 的二值夹爪闭合命令。
-
-单位：
+`gripper_closedness`：
 
 ```text
-无
+连续闭合度，0=open, 1=closed，无单位
 ```
 
-取值：
+`gripper_01closedness`：
 
 ```text
-0.0 或 1.0
+二值闭合状态，gripper_closedness >= 0.5 -> 1，否则为 0，无单位
 ```
 
-说明：
-
-- `0.0` 表示打开。
-- `1.0` 表示闭合。
-- 二值阈值为闭合度 `0.5`。
-
-当前 GUI 采集时从 robot node 的 observation 读取：
-
-```python
-gripper = robot_observations["gripper_command"]
-```
-
-每帧同时保存 `gripper_width`，表示 Franka Hand 反馈的实际开口宽度，单位米：
+`gripper_width`：
 
 ```text
-0.0 = 闭合
-0.09 = 最大张开，约 9 cm
+实际反馈开口宽度，单位米；0.0=闭合，0.09≈最大张开
 ```
 
-`gripper_target_width` 则是该命令换算后发给夹爪的目标宽度，单位米。
+`gripper_target_width`：
+
+```text
+命令目标开口宽度，单位米；0.0=闭合，0.09≈最大张开
+```
+
+旧数据里的 `gripper`、`gripper_closed`、`gripper_command_raw` 仍可由转换工具读取作为 fallback。
+Replay 的旧字段 fallback 以可推导目标宽度为准，详见下方 replay 优先级。新采集不再写这些旧字段。
+
 
 ### `timestamp`
 
@@ -400,19 +389,25 @@ franka_capture/config/fr3_single.py
 bash 15_record_bi_arm_pipeline.sh <task>
 ```
 
-双臂 episode 使用 `schema_version = "franka_dual_v1"`，机器人字段使用显式前缀：
+双臂 episode 使用 `schema_version = "franka_dual_v2"`，机器人字段使用显式前缀：
 
 ```python
 {
-    "schema_version": "franka_dual_v1",
+    "schema_version": "franka_dual_v2",
     "frame_index": i,
     "timestamp": unix_time,
     "left_pose": [x, y, z, rx, ry, rz],
     "left_joint": [j1, j2, j3, j4, j5, j6, j7],
-    "left_gripper": command,
+    "left_gripper_closedness": left_continuous_closedness,
+    "left_gripper_01closedness": left_binary_closedness,
+    "left_gripper_width": left_actual_width,
+    "left_gripper_target_width": left_target_width,
     "right_pose": [x, y, z, rx, ry, rz],
     "right_joint": [j1, j2, j3, j4, j5, j6, j7],
-    "right_gripper": command,
+    "right_gripper_closedness": right_continuous_closedness,
+    "right_gripper_01closedness": right_binary_closedness,
+    "right_gripper_width": right_actual_width,
+    "right_gripper_target_width": right_target_width,
     "<camera_name>_image": image,
 }
 ```
@@ -450,7 +445,7 @@ frames = obj["data"]
 
 poses = np.array([x["pose"] for x in frames])
 joints = np.array([x["joint"] for x in frames])
-grippers = np.array([x["gripper"] for x in frames])
+grippers = np.array([x["gripper_closedness"] for x in frames])
 timestamps = np.array([x["timestamp"] for x in frames])
 
 print("frames:", len(frames))
@@ -482,17 +477,17 @@ right_image shape: (480, 640, 3)
 当前映射是：
 
 ```text
-observation.state:   8 维 [j1, j2, j3, j4, j5, j6, j7, gripper_command]
+observation.state:   8 维 [j1, j2, j3, j4, j5, j6, j7, gripper_closedness]
 observation.ee_pose: 6 维 [x, y, z, rx, ry, rz]
-action:             14 维 下一帧 [x, y, z, rx, ry, rz, j1, ..., j7, gripper_command]
+action:             14 维 下一帧 [x, y, z, rx, ry, rz, j1, ..., j7, gripper_closedness]
 observation.images.<camera>: 每个 <camera>_image 自动转换成一路视频
 ```
 
 这里的 `action` 是“下一帧绝对目标”，最后一帧重复自身：
 
 ```text
-action[i] = [pose[i+1], joint[i+1], gripper[i+1]]
-action[-1] = [pose[-1], joint[-1], gripper[-1]]
+action[i] = [pose[i+1], joint[i+1], gripper_closedness[i+1]]
+action[-1] = [pose[-1], joint[-1], gripper_closedness[-1]]
 ```
 
 为什么之前 8 维 action 也能转换？
@@ -500,12 +495,12 @@ action[-1] = [pose[-1], joint[-1], gripper[-1]]
 - LeRobot v2.1 是按 `meta/info.json` 里的 feature schema 解释数据的格式。
 - 它不强制 `action` 必须是固定维度；只要 parquet 里的列和 `meta/info.json` 声明一致，8 维或 14 维都可以是格式合法的 LeRobot v2.1。
 - 之前的 8 维 action 表示“下一帧关节 + 夹爪”，所以格式上没问题。
-- 当前改成 14 维，是因为我们希望 action 明确包含 `abs ee pose + abs joint + abs gripper`，这是训练语义选择，不是因为加了相机才必须改 action 维度。
+- 当前改成 14 维，是因为我们希望 action 明确包含 `abs ee pose + abs joint + abs gripper_closedness`，这是训练语义选择，不是因为加了相机才必须改 action 维度。
 
 多相机只影响图像字段：
 
 - 新增相机会多出新的 `<camera>_image`、`<camera>.mp4` 和 LeRobot 的 `observation.images.<camera>`。
-- 新增相机不会改变 `pose`、`joint`、`gripper`、`observation.state` 或 `action` 的维度。
+- 新增相机不会改变 `pose`、`joint`、`gripper_closedness`、`observation.state` 或 `action` 的维度。
 - 转换整个 task 时，同一个输出 LeRobot 数据集内所有 episode 必须有相同的相机字段；不要把旧的单相机 episode 和新的双相机 episode 混到同一次 task 转换里。
 
 ## 转成 HDF5 后的字段
@@ -527,10 +522,13 @@ bash 11_convert_task_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_block
 HDF5 的核心字段是：
 
 ```text
-observations/state:   float32 (N, 8)   [j1..j7, gripper_command]
+observations/state:   float32 (N, 8)   [j1..j7, gripper_closedness]
 observations/ee_pose: float32 (N, 6)   [x, y, z, rx, ry, rz]
 observations/joint:   float32 (N, 7)   [j1..j7]
-observations/gripper: float32 (N,)     gripper_command, 0=open, 1=closed
+observations/gripper_closedness: float32 (N,)  continuous closedness
+observations/gripper_01closedness: float32 (N,) binary closedness
+observations/gripper_width: float32 (N,) actual width in meters
+observations/gripper_target_width: float32 (N,) target width in meters
 action:               float32 (N, 14)  下一帧 [ee_pose(6), state(8)]
 timestamp:            float32 (N,)     i / fps
 source_timestamp:     float64 (N,)     原始 pkl.gz 里的 unix timestamp
@@ -538,7 +536,7 @@ keyframes:            int64   (K,)
 observations/images/<camera>: uint8 (N, H, W, 3), RGB
 ```
 
-HDF5 里的 `action` 和 LeRobot 转换保持同一套语义：下一帧绝对 `abs ee + abs joint + abs gripper`。相机数量只影响 `observations/images/<camera>`，不影响 action 维度。
+HDF5 里的 `action` 和 LeRobot 转换保持同一套语义：下一帧绝对 `abs ee + abs joint + abs gripper_closedness`。相机数量只影响 `observations/images/<camera>`，不影响 action 维度。
 
 如果只需要 right 视角：
 
@@ -591,7 +589,8 @@ selected_source_indices = [0, 3, 6, 9, ...]
 ```text
 pose
 joint
-gripper
+gripper_closedness
+gripper_01closedness
 gripper_width
 gripper_target_width
 timestamp
@@ -613,7 +612,8 @@ franka_downsample/README.md
 
 ```text
 joint
-gripper
+gripper_target_width
+gripper_closedness
 timestamp
 ```
 
@@ -622,8 +622,8 @@ timestamp
 其中：
 
 - `joint` 用于复现 7 维机械臂关节轨迹。
-- `gripper` 用于复现夹爪命令；新数据是 `0=open, 1=closed`。
-  如果 episode 里有 `gripper_target_width`，replay 会用它发实际宽度事件。
+- `gripper_target_width` 优先用于复现夹爪目标宽度。
+- 如果没有 `gripper_target_width`，replay 会按 `gripper_closedness` 推导目标宽度；旧数据还会依次 fallback 到 `gripper_command_raw`、`gripper_01closedness`、legacy `gripper`，最后可用 `gripper_width` 作为目标宽度。
 - `timestamp` 用于按原始时间节奏 replay。
 
 `pose` 和图像不会直接用于当前 replay；它们主要用于后续训练、分析或可视化。

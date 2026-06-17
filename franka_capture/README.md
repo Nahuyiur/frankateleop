@@ -281,17 +281,25 @@ keyframes.json
 schema_version
 pose
 joint
-gripper
+gripper_closedness
+gripper_01closedness
+gripper_width
+gripper_target_width
 timestamp
 {camera_name}_image
 {camera_name}_depth    # 仅当 depth 录制开启
 ```
 
-这里保持和迁移包单臂录制脚本一致：视频只保存 RGB，`pkl.gz` 里每帧保存机器人状态和 `{camera_name}_image`。
+`gripper_closedness` 是连续闭合度，`0=open, 1=closed`。
+`gripper_01closedness` 是二值闭合状态，`closedness >= 0.5 -> 1`。
+`gripper_width` 和 `gripper_target_width` 是米单位开口宽度。
+
+视频只保存 RGB，`pkl.gz` 里每帧保存机器人状态和 `{camera_name}_image`。
 其中 `{camera_name}_image` 按迁移包习惯保存为 OpenCV BGR 图像。
 如果开启 depth，`{camera_name}_depth` 保存完整 aligned depth 图，shape 为 `(H, W)`，
 dtype 为 `float32`，单位是米，并且已经对齐到 color 图。
-`pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。`gripper` 保存真实夹爪宽度，单位和 Polymetis gripper width 一致。
+`pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。
+夹爪字段使用 `gripper_closedness` / `gripper_01closedness` / `gripper_width` / `gripper_target_width`。
 
 点云不作为主数据逐帧保存，因为它可以从 depth、RGB 和 `metadata.json`
 里的相机内参还原，而且逐帧保存稠密点云会非常占空间。开启 depth 后，每次保存

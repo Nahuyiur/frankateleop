@@ -6,6 +6,8 @@ DEFAULT_REPLAY_SPEED="${DEFAULT_REPLAY_SPEED:-1.0}"
 DEFAULT_GRIPPER_SPEED="${DEFAULT_GRIPPER_SPEED:-0.1}"
 DEFAULT_GRIPPER_FORCE="${DEFAULT_GRIPPER_FORCE:-10.0}"
 DEFAULT_GRIPPER_EVENT_DELTA="${DEFAULT_GRIPPER_EVENT_DELTA:-0.01}"
+DEFAULT_GRIPPER_REPLAY_MODE="${DEFAULT_GRIPPER_REPLAY_MODE:-event}"
+DEFAULT_GRIPPER_COMMAND_HZ="${DEFAULT_GRIPPER_COMMAND_HZ:-15.0}"
 DEFAULT_GRIPPER_HOLD_SEC="${DEFAULT_GRIPPER_HOLD_SEC:-2.0}"
 DEFAULT_GRIPPER_HOST="${DEFAULT_GRIPPER_HOST:-127.0.0.1}"
 DEFAULT_GRIPPER_PORT="${DEFAULT_GRIPPER_PORT:-50052}"
@@ -31,6 +33,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -lt 1 ]]; then
     echo "默认轨迹速度: $DEFAULT_REPLAY_SPEED"
     echo "默认夹爪 speed/force: $DEFAULT_GRIPPER_SPEED / $DEFAULT_GRIPPER_FORCE"
     echo "默认夹爪事件阈值: $DEFAULT_GRIPPER_EVENT_DELTA m"
+    echo "默认夹爪 replay 模式/Hz: $DEFAULT_GRIPPER_REPLAY_MODE / $DEFAULT_GRIPPER_COMMAND_HZ"
     echo "默认夹爪事件后 joint 暂停: $DEFAULT_GRIPPER_HOLD_SEC s"
     echo "默认夹爪 server: $DEFAULT_GRIPPER_HOST:$DEFAULT_GRIPPER_PORT"
     echo "默认起点自动慢速靠近: $DEFAULT_APPROACH_START"
@@ -47,6 +50,7 @@ echo ">>> 输入 episode: $1"
 echo ">>> 默认轨迹速度: $DEFAULT_REPLAY_SPEED"
 echo ">>> 默认夹爪 speed/force: $DEFAULT_GRIPPER_SPEED / $DEFAULT_GRIPPER_FORCE"
 echo ">>> 默认夹爪事件阈值: $DEFAULT_GRIPPER_EVENT_DELTA m"
+echo ">>> 默认夹爪 replay 模式/Hz: $DEFAULT_GRIPPER_REPLAY_MODE / $DEFAULT_GRIPPER_COMMAND_HZ"
 echo ">>> 默认夹爪事件后 joint 暂停: $DEFAULT_GRIPPER_HOLD_SEC s"
 echo ">>> 默认夹爪 server: $DEFAULT_GRIPPER_HOST:$DEFAULT_GRIPPER_PORT"
 echo ">>> 默认起点自动慢速靠近: $DEFAULT_APPROACH_START"
@@ -68,6 +72,8 @@ python -m franka_replay.replay_fr3 \
     --gripper-speed "$DEFAULT_GRIPPER_SPEED" \
     --gripper-force "$DEFAULT_GRIPPER_FORCE" \
     --gripper-event-delta "$DEFAULT_GRIPPER_EVENT_DELTA" \
+    --gripper-replay-mode "$DEFAULT_GRIPPER_REPLAY_MODE" \
+    --gripper-command-hz "$DEFAULT_GRIPPER_COMMAND_HZ" \
     --gripper-hold-sec "$DEFAULT_GRIPPER_HOLD_SEC" \
     --gripper-host "$DEFAULT_GRIPPER_HOST" \
     --gripper-port "$DEFAULT_GRIPPER_PORT" \

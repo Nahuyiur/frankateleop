@@ -65,7 +65,10 @@ bash 12_downsample_task_to_10hz.sh \
 schema_version  # 如果源数据存在
 pose
 joint
-gripper
+gripper_closedness
+gripper_01closedness
+gripper_width
+gripper_target_width
 timestamp
 right_image
 ```

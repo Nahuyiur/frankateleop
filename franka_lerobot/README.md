@@ -42,15 +42,15 @@ bash 9_convert_task_to_lerobot.sh /home/pnp/Desktop/franka_record_data/pick_bloc
 
 ## 字段映射
 
-- `observation.state`：8 维绝对状态，`[j1, j2, j3, j4, j5, j6, j7, gripper_command]`
+- `observation.state`：8 维绝对状态，`[j1, j2, j3, j4, j5, j6, j7, gripper_closedness]`
 - `observation.ee_pose`：6 维绝对末端位姿，`[x, y, z, rx, ry, rz]`
-- `action`：14 维下一帧绝对目标，`[abs_ee_pose(6), abs_joint(7), abs_gripper_command(1)]`，最后一帧重复自身
+- `action`：14 维下一帧绝对目标，`[abs_ee_pose(6), abs_joint(7), abs_gripper_closedness(1)]`，最后一帧重复自身
 - `observation.images.<camera>`：从 `*_image` 字段自动检测并重新编码为 mp4
 
 其中：
 
 - 关节角单位是弧度。
-- `gripper_command` 是二值闭合命令，`0=open, 1=closed`。
+- `gripper_closedness` 是连续闭合度，`0=open, 1=closed`；原始 pkl 中的二值字段为 `gripper_01closedness`。
 - 末端位置单位是米，姿态是 xyz 欧拉角弧度。
 
 `action` 的维度和相机数量没有关系。新增相机只会新增 `observation.images.<camera>` 视频，不会改变 `observation.state`、`observation.ee_pose` 或 `action` 的维度。

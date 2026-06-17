@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.13.29}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
@@ -55,7 +55,7 @@ Recording keys:
   k=keyframe, q=save and quit
 
 Environment:
-  BI_ARM_RIGHT_SSH=192.168.13.29
+  BI_ARM_RIGHT_SSH=192.168.1.131
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_READY_TIMEOUT=120
@@ -142,6 +142,7 @@ sync_remote_right_scripts() {
         teleop/experiments/launch_nodes.py \
         teleop/experiments/run_env.py \
         teleop/teleop/agents/teleop_agent.py \
+        teleop/teleop/dynamixel/driver.py \
         teleop/teleop/robots/fr3.py | \
         ssh_cmd "$RIGHT_SSH" "mkdir -p $(q "$RIGHT_REPO") && tar -C $(q "$RIGHT_REPO") -xf - && chmod +x $(q "$RIGHT_REPO/right_franka")/*.sh"
 }
@@ -326,6 +327,44 @@ EOF
     remote_bash "$cmd" || true
 }
 
+kill_remote_right_teleop_serial_holder() {
+    local teleop_port="${RIGHT_TELEOP_PORT_OVERRIDE:-/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0}"
+    local cmd
+    cmd=$(cat <<EOF
+teleop_port=$(q "$teleop_port")
+pids="\$(
+    {
+        if [[ -e "\$teleop_port" ]] && command -v fuser >/dev/null 2>&1; then
+            fuser "\$teleop_port" 2>/dev/null | tr ' ' '\n' || true
+        fi
+        ps -eo pid=,cmd= | awk -v port="\$teleop_port" '
+            /teleop\\/experiments\\/run_env.py/ && index(\$0, "--teleop_port=" port) {print \$1}
+        '
+    } | awk '/^[0-9]+$/ && !seen[\$0]++'
+)"
+if [[ -n "\$pids" ]]; then
+    echo "Cleaning stale remote right teleop serial holder on \$teleop_port: \$pids"
+    for pid in \$pids; do
+        pgid="\$(ps -o pgid= -p "\$pid" 2>/dev/null | tr -d ' ' || true)"
+        if [[ -n "\$pgid" ]]; then
+            kill -TERM -"\$pgid" 2>/dev/null || true
+        fi
+        kill -TERM "\$pid" 2>/dev/null || true
+    done
+    sleep 1
+    for pid in \$pids; do
+        pgid="\$(ps -o pgid= -p "\$pid" 2>/dev/null | tr -d ' ' || true)"
+        if [[ -n "\$pgid" ]]; then
+            kill -KILL -"\$pgid" 2>/dev/null || true
+        fi
+        kill -KILL "\$pid" 2>/dev/null || true
+    done
+fi
+EOF
+)
+    remote_bash "$cmd" || true
+}
+
 cleanup_stale_ports() {
     [[ "${BI_ARM_CLEAN_STALE:-1}" == "0" ]] && return 0
     if [[ "$RIGHT_ONLY" == "1" ]]; then
@@ -340,6 +379,7 @@ cleanup_stale_ports() {
     kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
     kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
     kill_port_remote "right ZMQ node" "$RIGHT_REMOTE_ZMQ_PORT"
+    kill_remote_right_teleop_serial_holder
 }
 
 cleanup_local_started_processes() {
@@ -535,9 +575,12 @@ for method in ("num_dofs", "get_observations"):
     if method == "num_dofs" and int(result) != 8:
         raise RuntimeError(f"bad num_dofs: {result}")
     if method == "get_observations":
-        missing = [key for key in ("ee_pose_euler", "gripper_command") if key not in result]
+        missing = [key for key in ("ee_pose_euler",) if key not in result]
         if missing:
             raise RuntimeError(f"robot node is missing observation fields: {missing}")
+        missing_gripper = [key for key in ("gripper_closedness", "gripper_01closedness", "gripper_target_width", "gripper_width") if key not in result]
+        if missing_gripper:
+            raise RuntimeError(f"robot node is missing continuous gripper observation fields: {missing_gripper}")
 sock.close(0)
 ctx.term()
 PY
@@ -565,9 +608,12 @@ for method in ("num_dofs", "get_observations"):
     if method == "num_dofs" and int(result) != 8:
         raise RuntimeError(f"bad num_dofs: {result}")
     if method == "get_observations":
-        missing = [key for key in ("ee_pose_euler", "gripper_command") if key not in result]
+        missing = [key for key in ("ee_pose_euler",) if key not in result]
         if missing:
             raise RuntimeError(f"robot node is missing observation fields: {missing}")
+        missing_gripper = [key for key in ("gripper_closedness", "gripper_01closedness", "gripper_target_width", "gripper_width") if key not in result]
+        if missing_gripper:
+            raise RuntimeError(f"robot node is missing continuous gripper observation fields: {missing_gripper}")
 sock.close(0)
 ctx.term()
 PY

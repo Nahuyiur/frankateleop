@@ -10,6 +10,14 @@ from typing import Any
 
 import numpy as np
 
+from franka_capture.gripper_fields import (
+    GRIPPER_01CLOSEDNESS_FIELD,
+    frame_gripper_01closedness,
+    frame_gripper_closedness,
+    frame_gripper_target_width,
+    frame_gripper_width,
+)
+
 
 DEFAULT_SOURCE_FPS = 30
 DEFAULT_TARGET_FPS = 10
@@ -153,7 +161,7 @@ def downsample_episode(
 
 
 def _filter_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path, camera_fields: list[str]) -> dict[str, Any]:
-    required = {"pose", "joint", "gripper", "timestamp", *camera_fields}
+    required = {"pose", "joint", "timestamp", *camera_fields}
     missing = required - set(frame)
     if missing:
         raise DownsampleError(f"Frame {frame_index} in {pkl_path} is missing keys: {sorted(missing)}")
@@ -175,21 +183,14 @@ def _filter_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path, camer
     filtered = {
         "pose": frame["pose"].tolist() if hasattr(frame["pose"], "tolist") else list(frame["pose"]),
         "joint": frame["joint"].tolist() if hasattr(frame["joint"], "tolist") else list(frame["joint"]),
-        "gripper": float(frame["gripper"]),
+        "gripper_closedness": frame_gripper_closedness(frame),
+        GRIPPER_01CLOSEDNESS_FIELD: frame_gripper_01closedness(frame),
+        "gripper_width": frame_gripper_width(frame),
+        "gripper_target_width": frame_gripper_target_width(frame),
         "timestamp": float(frame["timestamp"]),
     }
     if "schema_version" in frame:
         filtered["schema_version"] = str(frame["schema_version"])
-    for key in (
-        "gripper_width",
-        "gripper_command_raw",
-        "gripper_target_width",
-        "gripper_command_timestamp",
-    ):
-        if key in frame:
-            filtered[key] = float(frame[key])
-    if "gripper_command_source" in frame:
-        filtered["gripper_command_source"] = str(frame["gripper_command_source"])
     for camera_field in camera_fields:
         filtered[camera_field] = frame[camera_field].copy()
     return filtered

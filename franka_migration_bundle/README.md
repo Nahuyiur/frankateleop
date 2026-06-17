@@ -234,7 +234,8 @@ franka_migration_bundle/
 
 ### `single_arm_no_ros1/scripts/record_single.py`
 
-这是单臂主采集脚本。
+这是迁移包保留的旧版单臂主采集脚本，不是当前 `franka_single_v2`
+四字段夹爪格式的主入口。
 
 它会同时做三件事：
 

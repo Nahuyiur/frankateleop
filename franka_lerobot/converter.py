@@ -10,6 +10,13 @@ from typing import Any
 
 import numpy as np
 
+from franka_capture.gripper_fields import (
+    GRIPPER_CLOSED_THRESHOLD,
+    GRIPPER_SEMANTICS,
+    frame_gripper_01closedness as _frame_gripper_01closedness,
+    frame_gripper_closedness as _frame_gripper_closedness,
+)
+
 
 CODEBASE_VERSION = "v2.1"
 DEFAULT_FPS = 10
@@ -17,10 +24,8 @@ DEFAULT_ROBOT_TYPE = "franka_fr3"
 DEFAULT_CHUNKS_SIZE = 1000
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100
 DEFAULT_VIDEO_FILE_SIZE_IN_MB = 200
-MAX_GRIPPER_WIDTH = 0.09
-GRIPPER_BINARY_THRESHOLD = 0.5
-GRIPPER_SEMANTICS = "binary_closedness_command"
-STATE_NAMES = [f"joint_{idx}" for idx in range(1, 8)] + ["gripper_command"]
+GRIPPER_BINARY_THRESHOLD = GRIPPER_CLOSED_THRESHOLD
+STATE_NAMES = [f"joint_{idx}" for idx in range(1, 8)] + ["gripper_closedness"]
 POSE_NAMES = ["x", "y", "z", "rx", "ry", "rz"]
 ACTION_NAMES = [f"ee_{name}" for name in POSE_NAMES] + STATE_NAMES
 META_FEATURES = {
@@ -440,7 +445,7 @@ def _write_metadata(
         "features": _jsonable_features(features),
         "gripper_semantics": GRIPPER_SEMANTICS,
         "gripper_values": {"0": "open", "1": "closed"},
-        "gripper_command_threshold": float(GRIPPER_BINARY_THRESHOLD),
+        "gripper_closed_threshold": float(GRIPPER_BINARY_THRESHOLD),
     }
     _write_json(meta_dir / "info.json", info)
     _write_json(meta_dir / "stats.json", _stats_to_jsonable(stats))
@@ -496,7 +501,7 @@ def _build_arrays(frames: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray,
     poses = []
     for frame in frames:
         joint = np.asarray(frame["joint"], dtype=np.float32)
-        gripper = np.asarray([frame_gripper_command(frame)], dtype=np.float32)
+        gripper = np.asarray([frame_gripper_closedness(frame)], dtype=np.float32)
         states.append(np.concatenate([joint, gripper], axis=0))
         poses.append(np.asarray(frame["pose"], dtype=np.float32))
 
@@ -510,22 +515,31 @@ def _build_arrays(frames: list[dict[str, Any]]) -> tuple[np.ndarray, np.ndarray,
     return states_array, poses_array, actions.astype(np.float32)
 
 
-def frame_gripper_command(frame: dict[str, Any]) -> float:
-    """Return binary closedness command: 0=open, 1=closed.
+def frame_gripper_closedness(frame: dict[str, Any]) -> float:
+    """Return continuous command closedness: 0=open, 1=closed.
 
-    New episodes store this directly in frame["gripper"] and keep feedback width
-    in frame["gripper_width"]. Legacy episodes stored frame["gripper"] as width
-    in meters, so convert that width to the same binary command.
+    v2 episodes store this in frame["gripper_closedness"]. Older episodes may
+    only have gripper_command_raw, gripper_target_width, gripper_01closedness,
+    gripper_width, or legacy gripper.
     """
-    value = float(frame["gripper"])
-    if "gripper_width" in frame:
-        return 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-    if -1e-4 <= value <= MAX_GRIPPER_WIDTH + 1e-3:
-        closedness = 1.0 - (float(np.clip(value, 0.0, MAX_GRIPPER_WIDTH)) / MAX_GRIPPER_WIDTH)
-        return 1.0 if closedness >= GRIPPER_BINARY_THRESHOLD else 0.0
-    if -1e-4 <= value <= 1.0 + 1e-4:
-        return 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-    raise ConversionError(f"Invalid gripper value for binary command: {value}")
+    try:
+        return _frame_gripper_closedness(frame)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConversionError("Invalid gripper value for continuous closedness") from exc
+
+
+def frame_gripper_01closedness(frame: dict[str, Any]) -> float:
+    """Return binary closedness for compatibility: 0=open, 1=closed."""
+    try:
+        return _frame_gripper_01closedness(frame)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ConversionError("Invalid gripper value for binary closedness") from exc
+
+
+def frame_gripper_command(frame: dict[str, Any]) -> float:
+    """Legacy alias for older converter users."""
+
+    return frame_gripper_01closedness(frame)
 
 
 def _compute_episode_stats(
@@ -632,7 +646,7 @@ def _validate_written_dataset(output_root: Path, episode_results: list[EpisodeWr
 
 
 def _validate_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path) -> None:
-    required = {"pose", "joint", "gripper", "timestamp"}
+    required = {"pose", "joint", "timestamp"}
     missing = required - set(frame)
     if missing:
         raise ConversionError(f"Frame {frame_index} in {pkl_path} is missing keys: {sorted(missing)}")
@@ -642,9 +656,13 @@ def _validate_frame(frame: dict[str, Any], frame_index: int, pkl_path: Path) -> 
     if np.asarray(frame["joint"]).shape != (7,):
         raise ConversionError(f"Frame {frame_index} in {pkl_path} has invalid joint shape")
     try:
-        frame_gripper_command(frame)
+        frame_gripper_closedness(frame)
+        frame_gripper_01closedness(frame)
         float(frame["timestamp"])
         for key in (
+            "gripper_closedness",
+            "gripper_01closedness",
+            "gripper_closed",
             "gripper_width",
             "gripper_command_raw",
             "gripper_target_width",

@@ -236,7 +236,7 @@ def main() -> int:
 
     dashboard = not args.no_dashboard
     header = (
-        "time          robot_open robot_closed width_m  cmd_closed needs_close "
+        "time          robot_open robot_closed width_m  target_closed needs_close "
         "target_m source             signal_age event"
     )
     rows: collections.deque[str] = collections.deque(maxlen=args.rows)
@@ -304,7 +304,7 @@ def main() -> int:
             robot_open = float(np.clip(joint_state[-1], 0.0, 1.0))
             robot_closed = 1.0 - robot_open
             width_m = scalar(obs.get("gripper_width"), robot_open * MAX_GRIPPER_WIDTH)
-            cmd_raw = scalar(obs.get("gripper_command_raw"))
+            cmd_raw = scalar(obs.get("gripper_closedness"), scalar(obs.get("gripper_command_raw")))
             target_width = scalar(obs.get("gripper_target_width"))
             source = str(obs.get("gripper_command_source", ""))
             cmd_ts = scalar(obs.get("gripper_command_timestamp"))
@@ -323,7 +323,7 @@ def main() -> int:
             if source == "command_joint_state":
                 if last_needs_close is not None and needs_close != last_needs_close:
                     event = "close_signal_on" if needs_close else "close_signal_off"
-                    event_parts.append(f"{event}@cmd_closed={fmt(cmd_raw)}")
+                    event_parts.append(f"{event}@target_closed={fmt(cmd_raw)}")
                 if (
                     last_cmd_raw is not None
                     and math.isfinite(cmd_raw)

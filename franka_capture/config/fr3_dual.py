@@ -9,7 +9,7 @@ from franka_capture.config.fr3_single import (
     cameras_as_metadata,
 )
 
-DUAL_SCHEMA_VERSION = "franka_dual_v1"
+DUAL_SCHEMA_VERSION = "franka_dual_v2"
 
 DEFAULT_LEFT_ROBOT = RobotEndpointConfig(host="127.0.0.1", port=6002, timeout_ms=2000)
 DEFAULT_RIGHT_ROBOT = RobotEndpointConfig(host="127.0.0.1", port=16001, timeout_ms=2000)

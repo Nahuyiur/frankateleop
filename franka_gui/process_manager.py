@@ -126,6 +126,7 @@ class ProcessManager(QtCore.QObject):
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
+            self._prepare_sudo()
             self._cleanup_stale_pipeline_processes()
             self._start_dual_stack_script()
             self.stack_state_changed.emit("running")
@@ -141,6 +142,8 @@ class ProcessManager(QtCore.QObject):
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
+            self._prepare_sudo()
+            self._cleanup_stale_pipeline_processes()
             self._start_right_stack_script()
             self.stack_state_changed.emit("running")
             self.status_changed.emit("右臂机器人栈已启动: right 1-4 ready")
@@ -431,9 +434,15 @@ for method in ("num_dofs", "get_observations"):
     if method == "num_dofs" and int(result) <= 0:
         raise RuntimeError(f"bad num_dofs: {result}")
     if method == "get_observations":
-        for key in ("ee_pose_euler", "gripper_command"):
-            if key not in result:
-                raise RuntimeError(f"robot node is missing {key}")
+        if "ee_pose_euler" not in result:
+            raise RuntimeError("robot node is missing ee_pose_euler")
+        missing_gripper = [
+            key
+            for key in ("gripper_closedness", "gripper_01closedness", "gripper_target_width", "gripper_width")
+            if key not in result
+        ]
+        if missing_gripper:
+            raise RuntimeError("robot node is missing continuous gripper observation fields")
 sock.close(0)
 ctx.term()
 """
@@ -501,6 +510,36 @@ ctx.term()
                 _kill_pids(unique_pids, signal.SIGTERM)
                 time.sleep(0.2)
                 _kill_pids(unique_pids, signal.SIGKILL)
+        self._cleanup_stale_local_ports()
+
+    def _cleanup_stale_local_ports(self) -> None:
+        ports = [
+            ("robot server 50051", int(os.environ.get("BI_ARM_RIGHT_ROBOT_PORT", "50051"))),
+            ("left robot/single gripper 50052", int(os.environ.get("BI_ARM_LEFT_ROBOT_PORT", "50052"))),
+            ("right gripper 50053", int(os.environ.get("BI_ARM_RIGHT_GRIPPER_PORT", "50053"))),
+            ("left gripper 50054", int(os.environ.get("BI_ARM_LEFT_GRIPPER_PORT", "50054"))),
+            ("single/right ZMQ 6001", int(os.environ.get("BI_ARM_RIGHT_REMOTE_ZMQ_PORT", "6001"))),
+            ("left ZMQ 6002", int(os.environ.get("BI_ARM_LEFT_ZMQ_PORT", "6002"))),
+            ("right ZMQ tunnel 16001", int(os.environ.get("BI_ARM_RIGHT_LOCAL_ZMQ_PORT", "16001"))),
+            ("right gripper tunnel 15053", int(os.environ.get("BI_ARM_RIGHT_LOCAL_GRIPPER_PORT", "15053"))),
+        ]
+        current_pids = {os.getpid(), os.getppid()}
+        seen_ports: set[int] = set()
+        for label, port in ports:
+            if port in seen_ports:
+                continue
+            seen_ports.add(port)
+            pids = []
+            for pid in _tcp_port_pids(port):
+                if pid in current_pids:
+                    continue
+                pids.extend(_collect_pid_tree(pid))
+            unique_pids = sorted(set(pids), reverse=True)
+            if unique_pids:
+                self._emit_log(f"清理旧本地端口 {label}: {unique_pids}")
+                _kill_pids(unique_pids, signal.SIGTERM)
+                time.sleep(0.2)
+                _kill_pids(unique_pids, signal.SIGKILL)
 
 
 def _conda_python(env_name: str, code: str, timeout: int) -> subprocess.CompletedProcess:
@@ -563,7 +602,68 @@ def _kill_pids(pids: list[int], sig: signal.Signals) -> None:
         except ProcessLookupError:
             continue
         except PermissionError:
-            subprocess.run(["sudo", "-n", "kill", f"-{int(sig)}", str(pid)], check=False)
+            _sudo_kill_pid(pid, sig)
+
+
+def _sudo_kill_pid(pid: int, sig: signal.Signals) -> None:
+    if not _command_exists("sudo"):
+        return
+    result = subprocess.run(
+        ["sudo", "-n", "kill", f"-{int(sig)}", str(pid)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode == 0:
+        return
+    password = _read_sudo_password()
+    if not password:
+        return
+    subprocess.run(
+        ["sudo", "-S", "-p", "", "kill", f"-{int(sig)}", str(pid)],
+        input=f"{password}\n",
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+
+
+def _tcp_port_pids(port: int) -> list[int]:
+    pids: list[int] = []
+    if _command_exists("lsof"):
+        for args in (
+            ["lsof", "-t", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            ["lsof", "-t", f"-i:{port}"],
+        ):
+            result = subprocess.run(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                check=False,
+            )
+            pids.extend(_parse_pid_tokens(result.stdout))
+    if _command_exists("fuser"):
+        result = subprocess.run(
+            ["fuser", "-n", "tcp", str(port)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            check=False,
+        )
+        pids.extend(_parse_pid_tokens(result.stdout))
+    return sorted(set(pids))
+
+
+def _parse_pid_tokens(text: str) -> list[int]:
+    pids: list[int] = []
+    for token in text.replace("\n", " ").split():
+        try:
+            pids.append(int(token))
+        except ValueError:
+            continue
+    return pids
 
 
 def _read_sudo_password() -> Optional[str]:

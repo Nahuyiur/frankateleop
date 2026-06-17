@@ -18,11 +18,10 @@ from franka_capture.config.fr3_single import (
     SINGLE_SCHEMA_VERSION,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
+from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
 from franka_capture.recording.episode_writer import EpisodeWriter
 from franka_capture.recording.preview import concatenate_rgb_images, show_rgb_preview
 
-MAX_GRIPPER_WIDTH = 0.09
-GRIPPER_BINARY_THRESHOLD = 0.5
 FIXED_RECORDING_FPS = 30
 
 
@@ -78,20 +77,6 @@ def _as_saved_value(value: Any):
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
-
-
-def _as_scalar(value: Any) -> float:
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if isinstance(value, (list, tuple)):
-        if not value:
-            raise ValueError("Expected scalar value, got empty sequence")
-        value = value[0]
-    return float(value)
-
-
-def _as_binary_gripper_command(value: Any) -> float:
-    return 1.0 if _as_scalar(value) >= GRIPPER_BINARY_THRESHOLD else 0.0
 
 
 def _next_episode_index(output_root: str, task: str, start_index: Optional[int]) -> int:
@@ -179,9 +164,7 @@ def main() -> None:
                         "port": args.port,
                         "timeout_ms": args.timeout_ms,
                     },
-                    "gripper_semantics": "binary_closedness_command",
-                    "gripper_values": {"0": "open", "1": "closed"},
-                    "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
+                    **gripper_metadata(),
                     "cameras": camera_metadata,
                     "depth_recording": {
                         "enabled": depth_enabled,
@@ -333,43 +316,30 @@ def main() -> None:
                     "Robot node does not expose ee_pose_euler. "
                     "Restart 3_launch_node.sh after updating teleop/teleop/robots/fr3.py."
                 )
-            if "gripper_command" not in robot_observations:
+            if not any(
+                key in robot_observations
+                for key in (
+                    "gripper_closedness",
+                    "gripper_target_width",
+                )
+            ):
                 raise RuntimeError(
-                    "Robot node does not expose gripper_command. "
+                    "Robot node does not expose continuous gripper fields. "
                     "Restart 3_launch_node.sh after updating teleop/teleop/robots/fr3.py."
                 )
             pose = robot_observations["ee_pose_euler"]
-            gripper_command_value = _as_scalar(robot_observations["gripper_command"])
-            gripper_command = _as_binary_gripper_command(gripper_command_value)
-            gripper_command_raw = _as_scalar(
-                robot_observations.get("gripper_command_raw", gripper_command_value)
-            )
-            gripper_target_width = _as_scalar(
-                robot_observations.get(
-                    "gripper_target_width",
-                    MAX_GRIPPER_WIDTH * (1.0 - gripper_command_raw),
-                )
-            )
-            gripper_command_timestamp = _as_scalar(
-                robot_observations.get("gripper_command_timestamp", time.time())
-            )
-            gripper_width = _as_scalar(
-                robot_observations.get(
-                    "gripper_width",
-                    joint_state[-1] * MAX_GRIPPER_WIDTH,
-                )
+            now = time.time()
+            gripper_fields = observation_gripper_fields(
+                robot_observations,
+                joint_state,
+                timestamp=now,
             )
             frame = {
                 "schema_version": SINGLE_SCHEMA_VERSION,
                 "pose": _as_saved_value(pose),
                 "joint": _as_saved_value(joint_state[:7]),
-                "gripper": gripper_command,
-                "gripper_width": gripper_width,
-                "gripper_command_raw": gripper_command_raw,
-                "gripper_target_width": gripper_target_width,
-                "gripper_command_timestamp": gripper_command_timestamp,
-                "gripper_command_source": robot_observations.get("gripper_command_source", ""),
-                "timestamp": time.time(),
+                **gripper_fields,
+                "timestamp": now,
             }
             for name in camera_names:
                 frame[f"{name}_image"] = rgb_frames[name][:, :, ::-1].copy()

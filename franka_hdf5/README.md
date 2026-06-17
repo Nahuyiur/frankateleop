@@ -114,7 +114,10 @@ observations/images/right
     state                  float32  (N, 8)
     ee_pose                float32  (N, 6)
     joint                  float32  (N, 7)
-    gripper                float32  (N,)
+    gripper_closedness     float32  (N,)
+    gripper_01closedness   float32  (N,)
+    gripper_width          float32  (N,)
+    gripper_target_width   float32  (N,)
     images/
       <camera_name>        uint8    (N, H, W, 3)
 
@@ -126,12 +129,15 @@ observations/images/right
 `observations/state`：
 
 ```text
-[j1, j2, j3, j4, j5, j6, j7, gripper_command]
+[j1, j2, j3, j4, j5, j6, j7, gripper_closedness]
 ```
 
 - 维度：8
 - 关节角单位：弧度
-- `gripper_command`：二值闭合命令，`0=open, 1=closed`
+- `gripper_closedness`：连续闭合度，`0=open, 1=closed`
+- `observations/gripper_01closedness`：二值开闭状态，`closedness >= 0.5 -> 1`
+- `observations/gripper_width`：实际开口宽度，单位米
+- `observations/gripper_target_width`：目标开口宽度，单位米
 
 `observations/ee_pose`：
 
@@ -149,7 +155,7 @@ observations/images/right
 ```text
 [next_x, next_y, next_z, next_rx, next_ry, next_rz,
  next_j1, next_j2, next_j3, next_j4, next_j5, next_j6, next_j7,
- next_gripper_command]
+ next_gripper_closedness]
 ```
 
 - 维度：14

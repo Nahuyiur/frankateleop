@@ -9,8 +9,9 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+from franka_capture.gripper_fields import frame_gripper_target_width
+
 from .replay_fr3 import (
-    GRIPPER_BINARY_THRESHOLD,
     MAX_GRIPPER_WIDTH,
     GripperDirectClient,
     RobotZMQReplayClient,
@@ -129,6 +130,18 @@ def parse_args():
         help="Emit a direct gripper command when target width changes by this many meters.",
     )
     parser.add_argument(
+        "--gripper-replay-mode",
+        choices=("event", "continuous"),
+        default="event",
+        help="event sends direct gripper commands only at width-change events; continuous sends sampled width commands.",
+    )
+    parser.add_argument(
+        "--gripper-command-hz",
+        type=float,
+        default=15.0,
+        help="Direct gripper command rate used by --gripper-replay-mode continuous.",
+    )
+    parser.add_argument(
         "--gripper-hold-sec",
         type=float,
         default=0.0,
@@ -189,30 +202,8 @@ def _extract_arm_gripper_command_and_width(frames, arm: str) -> Tuple[np.ndarray
 
 
 def _frame_arm_gripper_command_and_width(frame: Dict[str, Any], arm: str) -> Tuple[float, float]:
-    gripper_key = f"{arm}_gripper"
-    width_key = f"{arm}_gripper_width"
-    target_width_key = f"{arm}_gripper_target_width"
-
-    if gripper_key not in frame:
-        raise KeyError(f"Missing {gripper_key} in dual-arm frame")
-
-    value = float(frame[gripper_key])
-    if width_key in frame:
-        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-        target_width = float(
-            frame.get(target_width_key, gripper_command_to_width(command))
-        )
-        return command, _validate_gripper_width(target_width)
-
-    if -1e-4 <= value <= MAX_GRIPPER_WIDTH + 1e-3:
-        width = _validate_gripper_width(value)
-        return gripper_width_to_command(width), width
-
-    if -1e-4 <= value <= 1.0 + 1e-4:
-        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-        return command, gripper_command_to_width(command)
-
-    raise ValueError(f"Invalid recorded {arm} gripper value: {value}")
+    target_width = frame_gripper_target_width(frame, prefix=arm)
+    return gripper_width_to_command(target_width), _validate_gripper_width(target_width)
 
 
 def _validate_gripper_width(width: float) -> float:
@@ -342,6 +333,7 @@ def _send_joint_pair(
     right_command,
     gripper_speed,
     gripper_force,
+    update_gripper=True,
 ) -> None:
     futures = [
         executor.submit(
@@ -349,12 +341,14 @@ def _send_joint_pair(
             left_command,
             gripper_speed,
             gripper_force,
+            update_gripper,
         ),
         executor.submit(
             right_client.command_joint_state,
             right_command,
             gripper_speed,
             gripper_force,
+            update_gripper,
         ),
     ]
     for future in futures:
@@ -425,6 +419,7 @@ def approach_start_frames(
                 right_command,
                 gripper_speed,
                 gripper_force,
+                update_gripper=False,
             )
             sleep_sec = max(0.0, period_sec - (time.monotonic() - action_t0))
             if sleep_sec:
@@ -443,6 +438,8 @@ def replay_dual_trajectory(
     gripper_speed,
     gripper_force,
     gripper_hold_sec,
+    gripper_replay_mode,
+    gripper_command_hz,
 ):
     if speed <= 0:
         raise ValueError("--speed must be positive")
@@ -452,6 +449,10 @@ def replay_dual_trajectory(
         raise ValueError("--gripper-force must be positive")
     if gripper_hold_sec < 0:
         raise ValueError("--gripper-hold-sec must be nonnegative")
+    if gripper_replay_mode not in {"event", "continuous"}:
+        raise ValueError("--gripper-replay-mode must be event or continuous")
+    if gripper_replay_mode == "continuous" and gripper_command_hz <= 0:
+        raise ValueError("--gripper-command-hz must be positive in continuous mode")
 
     left_events_by_frame = {
         frame_idx: width for frame_idx, _, width in trajectories["left"].gripper_events
@@ -465,11 +466,14 @@ def replay_dual_trajectory(
     start_episode = float(timestamps[0])
     timeline_delay = 0.0
     total = len(timestamps)
+    gripper_period = 1.0 / float(gripper_command_hz)
+    next_gripper_elapsed = 0.0
 
     print(
         "Executing dual-arm replay. "
         f"replay_speed={speed}, gripper_speed={gripper_speed}, "
-        f"gripper_force={gripper_force}, gripper_hold_sec={gripper_hold_sec}. "
+        f"gripper_force={gripper_force}, gripper_mode={gripper_replay_mode}, "
+        f"gripper_command_hz={gripper_command_hz}, gripper_hold_sec={gripper_hold_sec}. "
         "Press Ctrl+C to interrupt."
     )
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -483,6 +487,11 @@ def replay_dual_trajectory(
 
             left_command = np.asarray(trajectories["left"].commands[idx], dtype=float).copy()
             right_command = np.asarray(trajectories["right"].commands[idx], dtype=float).copy()
+            left_target_width = gripper_command_to_width(left_command[-1])
+            right_target_width = gripper_command_to_width(right_command[-1])
+            if gripper_replay_mode == "continuous":
+                left_active_width = left_target_width
+                right_active_width = right_target_width
             left_command[-1] = gripper_width_to_command(left_active_width)
             right_command[-1] = gripper_width_to_command(right_active_width)
             _send_joint_pair(
@@ -494,6 +503,32 @@ def replay_dual_trajectory(
                 gripper_speed,
                 gripper_force,
             )
+
+            if gripper_replay_mode == "continuous":
+                if idx == 0 or idx == total - 1 or target_elapsed + 1e-9 >= next_gripper_elapsed:
+                    futures = [
+                        executor.submit(
+                            left_gripper_client.goto_width,
+                            left_target_width,
+                            gripper_speed,
+                            gripper_force,
+                        ),
+                        executor.submit(
+                            right_gripper_client.goto_width,
+                            right_target_width,
+                            gripper_speed,
+                            gripper_force,
+                        ),
+                    ]
+                    for future in futures:
+                        future.result()
+                    left_active_width = left_target_width
+                    right_active_width = right_target_width
+                    while next_gripper_elapsed <= target_elapsed + 1e-9:
+                        next_gripper_elapsed += gripper_period
+                if idx == 0 or idx == total - 1 or idx % 50 == 0:
+                    print(f"Sent dual-arm frame {idx + 1}/{total}")
+                continue
 
             gripper_futures = []
             left_width = left_events_by_frame.get(idx)
@@ -635,10 +670,12 @@ def main():
                             timestamps,
                             trajectories,
                             args.speed,
-                            args.gripper_speed,
-                            args.gripper_force,
-                            args.gripper_hold_sec,
-                        )
+                        args.gripper_speed,
+                        args.gripper_force,
+                        args.gripper_hold_sec,
+                        args.gripper_replay_mode,
+                        args.gripper_command_hz,
+                    )
                 print("Dual-arm replay finished.")
     except KeyboardInterrupt:
         print("\nDual-arm replay interrupted by user.")

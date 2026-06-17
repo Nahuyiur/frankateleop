@@ -44,3 +44,6 @@ bash 7_replay_fr3.sh /home/pnp/Desktop/franka_record_data/pick_block/3 --skip-ro
 - `--execute` 才会发送机器人命令；不加时不会动机械臂。
 - `7_replay_fr3.sh` 顶部可以修改默认 `DEFAULT_REPLAY_SPEED`、`DEFAULT_GRIPPER_SPEED`、`DEFAULT_GRIPPER_FORCE`。
 - 命令行传入的 `--speed`、`--gripper-speed`、`--gripper-force` 会覆盖脚本默认值。
+- 夹爪 replay 默认 `--gripper-replay-mode event`，只在目标宽度变化事件上发 direct gripper 命令。
+- 连续夹爪 replay 可显式使用 `--gripper-replay-mode continuous --gripper-command-hz 15`。
+- 字段优先级是 `gripper_target_width > gripper_closedness > gripper_command_raw > gripper_01closedness > legacy gripper`。

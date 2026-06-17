@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.13.29}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
@@ -29,6 +29,8 @@ DEFAULT_REPLAY_SPEED="${DEFAULT_REPLAY_SPEED:-1.0}"
 DEFAULT_GRIPPER_SPEED="${DEFAULT_GRIPPER_SPEED:-0.1}"
 DEFAULT_GRIPPER_FORCE="${DEFAULT_GRIPPER_FORCE:-10.0}"
 DEFAULT_GRIPPER_EVENT_DELTA="${DEFAULT_GRIPPER_EVENT_DELTA:-0.01}"
+DEFAULT_GRIPPER_REPLAY_MODE="${DEFAULT_GRIPPER_REPLAY_MODE:-event}"
+DEFAULT_GRIPPER_COMMAND_HZ="${DEFAULT_GRIPPER_COMMAND_HZ:-15.0}"
 DEFAULT_GRIPPER_HOLD_SEC="${DEFAULT_GRIPPER_HOLD_SEC:-2.0}"
 DEFAULT_APPROACH_START="${DEFAULT_APPROACH_START:-1}"
 DEFAULT_APPROACH_START_MAX_DELTA="${DEFAULT_APPROACH_START_MAX_DELTA:-0.75}"
@@ -60,7 +62,7 @@ Default mode is dry-run: it starts/checks both robot nodes but sends no replay
 trajectory unless --execute is passed.
 
 Environment:
-  BI_ARM_RIGHT_SSH=192.168.13.29
+  BI_ARM_RIGHT_SSH=192.168.1.131
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_RIGHT_LOCAL_GRIPPER_PORT=15053
@@ -74,6 +76,8 @@ Environment:
   BI_ARM_REPLAY_MOVE_TO_INITIAL_POSE=0
   BI_ARM_LEFT_ROBOTIQ_COMPORT=
   BI_ARM_RIGHT_ROBOTIQ_COMPORT=
+  DEFAULT_GRIPPER_REPLAY_MODE=event
+  DEFAULT_GRIPPER_COMMAND_HZ=15.0
 
 This script starts local left_franka/1-3, starts remote right_franka/1-3
 through SSH, opens SSH tunnels for right ZMQ and right gripper gRPC, then runs
@@ -515,9 +519,12 @@ for method in ("num_dofs", "get_observations"):
     if method == "num_dofs" and int(result) != 8:
         raise RuntimeError(f"bad num_dofs: {result}")
     if method == "get_observations":
-        missing = [key for key in ("ee_pose_euler", "gripper_command") if key not in result]
+        missing = [key for key in ("ee_pose_euler",) if key not in result]
         if missing:
             raise RuntimeError(f"robot node is missing observation fields: {missing}")
+        missing_gripper = [key for key in ("gripper_closedness", "gripper_01closedness", "gripper_target_width", "gripper_width") if key not in result]
+        if missing_gripper:
+            raise RuntimeError(f"robot node is missing continuous gripper observation fields: {missing_gripper}")
 sock.close(0)
 ctx.term()
 PY
@@ -545,9 +552,12 @@ for method in ("num_dofs", "get_observations"):
     if method == "num_dofs" and int(result) != 8:
         raise RuntimeError(f"bad num_dofs: {result}")
     if method == "get_observations":
-        missing = [key for key in ("ee_pose_euler", "gripper_command") if key not in result]
+        missing = [key for key in ("ee_pose_euler",) if key not in result]
         if missing:
             raise RuntimeError(f"robot node is missing observation fields: {missing}")
+        missing_gripper = [key for key in ("gripper_closedness", "gripper_01closedness", "gripper_target_width", "gripper_width") if key not in result]
+        if missing_gripper:
+            raise RuntimeError(f"robot node is missing continuous gripper observation fields: {missing_gripper}")
 sock.close(0)
 ctx.term()
 PY
@@ -723,6 +733,8 @@ run_replay() {
             --gripper-speed "$DEFAULT_GRIPPER_SPEED" \
             --gripper-force "$DEFAULT_GRIPPER_FORCE" \
             --gripper-event-delta "$DEFAULT_GRIPPER_EVENT_DELTA" \
+            --gripper-replay-mode "$DEFAULT_GRIPPER_REPLAY_MODE" \
+            --gripper-command-hz "$DEFAULT_GRIPPER_COMMAND_HZ" \
             --gripper-hold-sec "$DEFAULT_GRIPPER_HOLD_SEC" \
             --left-host 127.0.0.1 \
             --left-port "$LEFT_ZMQ_PORT" \
@@ -765,6 +777,7 @@ main() {
     log "Move to initial joint pose before replay checks: $MOVE_TO_INITIAL_POSE"
     log "Replay speed: $DEFAULT_REPLAY_SPEED"
     log "Gripper speed/force: $DEFAULT_GRIPPER_SPEED / $DEFAULT_GRIPPER_FORCE"
+    log "Gripper replay mode/Hz: $DEFAULT_GRIPPER_REPLAY_MODE / $DEFAULT_GRIPPER_COMMAND_HZ"
     log "Right local gripper tunnel port: $RIGHT_LOCAL_GRIPPER_PORT"
 
     setup_ssh_askpass

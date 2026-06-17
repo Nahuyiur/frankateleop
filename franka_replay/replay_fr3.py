@@ -11,8 +11,13 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import zmq
 
-MAX_GRIPPER_WIDTH = 0.09
-GRIPPER_BINARY_THRESHOLD = 0.5
+from franka_capture.gripper_fields import (
+    GRIPPER_CLOSED_THRESHOLD,
+    MAX_GRIPPER_WIDTH,
+    frame_gripper_target_width,
+)
+
+GRIPPER_BINARY_THRESHOLD = GRIPPER_CLOSED_THRESHOLD
 
 
 def gripper_width_to_command(width: float) -> float:
@@ -65,6 +70,7 @@ class RobotZMQReplayClient:
         joint_state: np.ndarray,
         gripper_speed: float,
         gripper_force: float,
+        update_gripper: bool = True,
     ) -> None:
         self._request(
             "command_joint_state",
@@ -72,6 +78,7 @@ class RobotZMQReplayClient:
                 "joint_state": joint_state,
                 "gripper_speed": gripper_speed,
                 "gripper_force": gripper_force,
+                "update_gripper": bool(update_gripper),
             },
         )
 
@@ -243,6 +250,18 @@ def parse_args():
         help="Emit a direct gripper command when recorded target width changes by at least this many meters.",
     )
     parser.add_argument(
+        "--gripper-replay-mode",
+        choices=("event", "continuous"),
+        default="event",
+        help="event sends direct gripper commands only at width-change events; continuous sends sampled width commands.",
+    )
+    parser.add_argument(
+        "--gripper-command-hz",
+        type=float,
+        default=15.0,
+        help="Direct gripper command rate used by --gripper-replay-mode continuous.",
+    )
+    parser.add_argument(
         "--gripper-hold-sec",
         type=float,
         default=0.0,
@@ -324,23 +343,8 @@ def _extract_gripper_command_and_width(frames) -> Tuple[np.ndarray, np.ndarray]:
 
 
 def _frame_gripper_command_and_width(frame: Dict[str, Any]) -> Tuple[float, float]:
-    value = float(frame["gripper"])
-    if "gripper_width" in frame:
-        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-        target_width = float(
-            frame.get("gripper_target_width", gripper_command_to_width(command))
-        )
-        return command, _validate_gripper_width(target_width)
-
-    if -1e-4 <= value <= MAX_GRIPPER_WIDTH + 1e-3:
-        width = _validate_gripper_width(value)
-        return gripper_width_to_command(width), width
-
-    if -1e-4 <= value <= 1.0 + 1e-4:
-        command = 1.0 if value >= GRIPPER_BINARY_THRESHOLD else 0.0
-        return command, gripper_command_to_width(command)
-
-    raise ValueError(f"Invalid recorded gripper value: {value}")
+    target_width = frame_gripper_target_width(frame)
+    return gripper_width_to_command(target_width), _validate_gripper_width(target_width)
 
 
 def _validate_gripper_width(width: float) -> float:
@@ -531,6 +535,8 @@ def replay_trajectory(
     gripper_speed,
     gripper_force,
     gripper_hold_sec,
+    gripper_replay_mode,
+    gripper_command_hz,
 ):
     if speed <= 0:
         raise ValueError("--speed must be positive")
@@ -540,6 +546,10 @@ def replay_trajectory(
         raise ValueError("--gripper-force must be positive")
     if gripper_hold_sec < 0:
         raise ValueError("--gripper-hold-sec must be nonnegative")
+    if gripper_replay_mode not in {"event", "continuous"}:
+        raise ValueError("--gripper-replay-mode must be event or continuous")
+    if gripper_replay_mode == "continuous" and gripper_command_hz <= 0:
+        raise ValueError("--gripper-command-hz must be positive in continuous mode")
 
     gripper_events_by_frame = {frame_idx: width for frame_idx, _, width in gripper_events}
     active_gripper_width = (
@@ -551,11 +561,14 @@ def replay_trajectory(
     start_episode = float(timestamps[0])
     timeline_delay = 0.0
     total = len(commands)
+    gripper_period = 1.0 / float(gripper_command_hz)
+    next_gripper_elapsed = 0.0
 
     print(
         "Executing replay. "
         f"replay_speed={speed}, gripper_speed={gripper_speed}, "
-        f"gripper_force={gripper_force}, gripper_hold_sec={gripper_hold_sec}. "
+        f"gripper_force={gripper_force}, gripper_mode={gripper_replay_mode}, "
+        f"gripper_command_hz={gripper_command_hz}, gripper_hold_sec={gripper_hold_sec}. "
         "Press Ctrl+C to interrupt."
     )
     for idx, command in enumerate(commands):
@@ -567,23 +580,38 @@ def replay_trajectory(
             time.sleep(min(remaining, 0.01))
 
         joint_command = np.asarray(command, dtype=float).copy()
+        target_width = gripper_command_to_width(joint_command[-1])
+        if gripper_replay_mode == "continuous":
+            active_gripper_width = target_width
         joint_command[-1] = gripper_width_to_command(active_gripper_width)
-        client.command_joint_state(joint_command, gripper_speed, gripper_force)
-        gripper_width = gripper_events_by_frame.get(idx)
-        if gripper_width is not None:
-            gripper_client.goto_width(gripper_width, gripper_speed, gripper_force)
-            active_gripper_width = gripper_width
-            print(
-                f"Sent gripper event at frame {idx + 1}/{total}: "
-                f"target_width={gripper_width:.6f} m"
-            )
-            if gripper_hold_sec > 0:
+        client.command_joint_state(
+            joint_command,
+            gripper_speed,
+            gripper_force,
+            update_gripper=False,
+        )
+        if gripper_replay_mode == "continuous":
+            if idx == 0 or idx == total - 1 or target_elapsed + 1e-9 >= next_gripper_elapsed:
+                gripper_client.goto_width(target_width, gripper_speed, gripper_force)
+                active_gripper_width = target_width
+                while next_gripper_elapsed <= target_elapsed + 1e-9:
+                    next_gripper_elapsed += gripper_period
+        else:
+            gripper_width = gripper_events_by_frame.get(idx)
+            if gripper_width is not None:
+                gripper_client.goto_width(gripper_width, gripper_speed, gripper_force)
+                active_gripper_width = gripper_width
                 print(
-                    f"Holding joint replay for {gripper_hold_sec:.3f}s "
-                    "after gripper event"
+                    f"Sent gripper event at frame {idx + 1}/{total}: "
+                    f"target_width={gripper_width:.6f} m"
                 )
-                time.sleep(gripper_hold_sec)
-                timeline_delay += gripper_hold_sec
+                if gripper_hold_sec > 0:
+                    print(
+                        f"Holding joint replay for {gripper_hold_sec:.3f}s "
+                        "after gripper event"
+                    )
+                    time.sleep(gripper_hold_sec)
+                    timeline_delay += gripper_hold_sec
         if idx == 0 or idx == total - 1 or idx % 50 == 0:
             print(f"Sent frame {idx + 1}/{total}")
 
@@ -676,12 +704,14 @@ def main():
                     args.gripper_speed,
                     args.gripper_force,
                     args.gripper_hold_sec,
+                    args.gripper_replay_mode,
+                    args.gripper_command_hz,
                 )
             print("Replay finished.")
     except KeyboardInterrupt:
         print("\nReplay interrupted by user.")
         raise SystemExit(130)
-    except (TimeoutError, RuntimeError, ValueError) as exc:
+    except (TimeoutError, RuntimeError, ValueError, KeyError) as exc:
         print(f"Replay check failed: {exc}")
         if not args.execute:
             print(

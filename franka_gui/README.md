@@ -102,20 +102,23 @@ GUI 保存的数据保持和当前 `franka_capture` 兼容：
 schema_version
 pose
 joint
-gripper
+gripper_closedness
+gripper_01closedness
 gripper_width
 gripper_target_width
 timestamp
 <camera_name>_image
 ```
 
-双臂 GUI 使用 `franka_dual_v1`，每帧保存 `left_*` 和 `right_*`
+双臂 GUI 使用 `franka_dual_v2`，每帧保存 `left_*` 和 `right_*`
 机器人字段，并保存全部 `<camera_name>_image`。
 
 `preview_all.mp4` 是 GUI 额外保存的低分辨率横向拼接预览视频，用于快速回看；
 它不改变 `pkl.gz` 中的逐帧数据。
 
-`gripper` 为实际下发给 robot node 的二值闭合命令：`0=open, 1=closed`。
-`gripper_width` 为 Franka Hand 反馈的实际开口宽度，单位米。
+`gripper_closedness` 为连续闭合度：`0=open, 1=closed`。
+`gripper_01closedness` 为二值闭合状态：`closedness >= 0.5 -> 1`。
+`gripper_width` 为反馈实际开口宽度，单位米。
+`gripper_target_width` 为命令目标开口宽度，单位米。
 
 图像字段仍然是 OpenCV BGR 顺序，因此现有 HDF5 和 LeRobot 转换脚本可以继续读取。

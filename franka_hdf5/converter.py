@@ -8,6 +8,11 @@ from typing import Any
 
 import numpy as np
 
+from franka_capture.gripper_fields import (
+    GRIPPER_01CLOSEDNESS_FIELD,
+    frame_gripper_target_width,
+    frame_gripper_width,
+)
 from franka_lerobot.converter import (
     ACTION_NAMES,
     DEFAULT_FPS,
@@ -18,13 +23,14 @@ from franka_lerobot.converter import (
     STATE_NAMES,
     ConversionError,
     discover_task_episode_paths,
-    frame_gripper_command,
+    frame_gripper_01closedness,
+    frame_gripper_closedness,
     find_episode_pkl,
     load_episode,
 )
 
 
-FORMAT_VERSION = "franka_hdf5_v1"
+FORMAT_VERSION = "franka_hdf5_v2"
 DEFAULT_COMPRESSION = "gzip"
 
 
@@ -214,7 +220,17 @@ def _write_hdf5_episode(
 ) -> None:
     import h5py
 
-    states, poses, actions, joints, grippers, source_timestamps = _build_arrays(frames)
+    (
+        states,
+        poses,
+        actions,
+        joints,
+        gripper_closedness,
+        gripper_01closedness,
+        gripper_width,
+        gripper_target_width,
+        source_timestamps,
+    ) = _build_arrays(frames)
     num_frames = states.shape[0]
     frame_indices = np.arange(num_frames, dtype=np.int64)
     relative_timestamps = frame_indices.astype(np.float32) / float(fps)
@@ -235,10 +251,10 @@ def _write_hdf5_episode(
         h5.attrs["camera_names"] = json.dumps([_camera_field_to_name(field) for field in camera_fields])
         h5.attrs["image_color_order"] = "RGB"
         h5.attrs["source_image_color_order"] = "BGR"
-        h5.attrs["action_semantics"] = "next_frame_absolute_ee_pose_joint_gripper_command"
+        h5.attrs["action_semantics"] = "next_frame_absolute_ee_pose_joint_gripper_closedness"
         h5.attrs["gripper_semantics"] = GRIPPER_SEMANTICS
         h5.attrs["gripper_values"] = json.dumps({"0": "open", "1": "closed"})
-        h5.attrs["gripper_command_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
+        h5.attrs["gripper_closed_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
 
         h5.create_dataset("frame_index", data=frame_indices, dtype="i8")
         h5.create_dataset("timestamp", data=relative_timestamps, dtype="f4")
@@ -248,10 +264,24 @@ def _write_hdf5_episode(
         observations.create_dataset("state", data=states, dtype="f4")
         observations.create_dataset("ee_pose", data=poses, dtype="f4")
         observations.create_dataset("joint", data=joints, dtype="f4")
-        gripper_dataset = observations.create_dataset("gripper", data=grippers, dtype="f4")
-        gripper_dataset.attrs["semantics"] = GRIPPER_SEMANTICS
-        gripper_dataset.attrs["values"] = json.dumps({"0": "open", "1": "closed"})
-        gripper_dataset.attrs["command_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
+        closedness_dataset = observations.create_dataset(
+            "gripper_closedness",
+            data=gripper_closedness,
+            dtype="f4",
+        )
+        closedness_dataset.attrs["semantics"] = GRIPPER_SEMANTICS
+        closedness_dataset.attrs["range"] = json.dumps({"0": "open", "1": "closed"})
+        closedness_dataset.attrs["closed_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
+        gripper_01_dataset = observations.create_dataset(
+            GRIPPER_01CLOSEDNESS_FIELD,
+            data=gripper_01closedness,
+            dtype="f4",
+        )
+        gripper_01_dataset.attrs["semantics"] = "binary_closedness"
+        gripper_01_dataset.attrs["values"] = json.dumps({"0": "open", "1": "closed"})
+        gripper_01_dataset.attrs["closed_threshold"] = float(GRIPPER_BINARY_THRESHOLD)
+        observations.create_dataset("gripper_width", data=gripper_width, dtype="f4")
+        observations.create_dataset("gripper_target_width", data=gripper_target_width, dtype="f4")
 
         images = observations.create_group("images")
         for camera_field in camera_fields:
@@ -309,10 +339,10 @@ def _write_task_metadata(
         "state_names": STATE_NAMES,
         "pose_names": POSE_NAMES,
         "action_names": ACTION_NAMES,
-        "action_semantics": "next_frame_absolute_ee_pose_joint_gripper_command",
+        "action_semantics": "next_frame_absolute_ee_pose_joint_gripper_closedness",
         "gripper_semantics": GRIPPER_SEMANTICS,
         "gripper_values": {"0": "open", "1": "closed"},
-        "gripper_command_threshold": float(GRIPPER_BINARY_THRESHOLD),
+        "gripper_closed_threshold": float(GRIPPER_BINARY_THRESHOLD),
         "image_color_order": "RGB",
         "source_image_color_order": "BGR",
         "camera_names": [_camera_field_to_name(field) for field in camera_fields],
@@ -336,21 +366,30 @@ def _write_task_metadata(
 
 def _build_arrays(
     frames: list[dict[str, Any]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     joints = []
-    grippers = []
+    gripper_closedness = []
+    gripper_01closedness = []
+    gripper_width = []
+    gripper_target_width = []
     poses = []
     source_timestamps = []
 
     for frame in frames:
         joints.append(np.asarray(frame["joint"], dtype=np.float32))
-        grippers.append(frame_gripper_command(frame))
+        gripper_closedness.append(frame_gripper_closedness(frame))
+        gripper_01closedness.append(frame_gripper_01closedness(frame))
+        gripper_width.append(frame_gripper_width(frame))
+        gripper_target_width.append(frame_gripper_target_width(frame))
         poses.append(np.asarray(frame["pose"], dtype=np.float32))
         source_timestamps.append(float(frame["timestamp"]))
 
     joints_array = np.stack(joints, axis=0).astype(np.float32)
-    grippers_array = np.asarray(grippers, dtype=np.float32).reshape(-1, 1)
-    states_array = np.concatenate([joints_array, grippers_array], axis=1).astype(np.float32)
+    gripper_closedness_array = np.asarray(gripper_closedness, dtype=np.float32).reshape(-1, 1)
+    gripper_01closedness_array = np.asarray(gripper_01closedness, dtype=np.float32).reshape(-1, 1)
+    gripper_width_array = np.asarray(gripper_width, dtype=np.float32).reshape(-1, 1)
+    gripper_target_width_array = np.asarray(gripper_target_width, dtype=np.float32).reshape(-1, 1)
+    states_array = np.concatenate([joints_array, gripper_closedness_array], axis=1).astype(np.float32)
     poses_array = np.stack(poses, axis=0).astype(np.float32)
     action_targets = np.concatenate([poses_array, states_array], axis=1).astype(np.float32)
     if len(action_targets) == 1:
@@ -362,7 +401,10 @@ def _build_arrays(
         poses_array,
         actions,
         joints_array,
-        grippers_array[:, 0],
+        gripper_closedness_array[:, 0],
+        gripper_01closedness_array[:, 0],
+        gripper_width_array[:, 0],
+        gripper_target_width_array[:, 0],
         np.asarray(source_timestamps, dtype=np.float64),
     )
 
@@ -396,7 +438,10 @@ def _validate_hdf5_episode(path: Path) -> None:
             "observations/state": (num_frames, 8),
             "observations/ee_pose": (num_frames, 6),
             "observations/joint": (num_frames, 7),
-            "observations/gripper": (num_frames,),
+            "observations/gripper_closedness": (num_frames,),
+            "observations/gripper_01closedness": (num_frames,),
+            "observations/gripper_width": (num_frames,),
+            "observations/gripper_target_width": (num_frames,),
             "action": (num_frames, 14),
             "timestamp": (num_frames,),
             "source_timestamp": (num_frames,),

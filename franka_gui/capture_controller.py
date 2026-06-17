@@ -27,13 +27,11 @@ from franka_capture.config.fr3_single import (
     SINGLE_SCHEMA_VERSION,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
+from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
 
 from .async_episode_saver import AsyncEpisodeSaver, EpisodeSaveRequest
 from .mock_sources import MockRobot, create_mock_cameras
 
-MAX_GRIPPER_WIDTH = 0.09
-GRIPPER_BINARY_THRESHOLD = 0.5
-GRIPPER_BINARY_SEMANTICS = "binary_closedness_command"
 FIXED_CAPTURE_FPS = 30
 GUI_CAMERA_READ_TIMEOUT_MS = 3000
 
@@ -285,12 +283,7 @@ class CaptureThread(QtCore.QThread):
                 "started_at_unix": active.started_at,
                 "ended_at_unix": time.time(),
                 **self._robot_metadata(),
-                "gripper_semantics": GRIPPER_BINARY_SEMANTICS,
-                "gripper_values": {"0": "open", "1": "closed"},
-                "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
-                "gripper_width_field": "gripper_width",
-                "gripper_target_width_field": "gripper_target_width",
-                "gripper_command_source": "robot_observations.gripper_command",
+                **gripper_metadata(),
                 "cameras": camera_metadata,
             },
         )
@@ -351,41 +344,28 @@ class CaptureThread(QtCore.QThread):
             raise RuntimeError(
                 "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
             )
-        if "gripper_command" not in robot_observations:
-            raise RuntimeError(
-                "robot node 缺少 gripper_command，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
-            )
-        gripper_command_value = _as_scalar(robot_observations["gripper_command"])
-        gripper_command = _as_binary_gripper_command(gripper_command_value)
-        gripper_command_raw = _as_scalar(
-            robot_observations.get("gripper_command_raw", gripper_command_value)
-        )
-        gripper_target_width = _as_scalar(
-            robot_observations.get(
+        if not any(
+            key in robot_observations
+            for key in (
+                "gripper_closedness",
                 "gripper_target_width",
-                MAX_GRIPPER_WIDTH * (1.0 - gripper_command_raw),
             )
-        )
-        gripper_command_timestamp = _as_scalar(
-            robot_observations.get("gripper_command_timestamp", time.time())
-        )
-        gripper_width = _as_scalar(
-            robot_observations.get(
-                "gripper_width",
-                joint_state[-1] * MAX_GRIPPER_WIDTH,
+        ):
+            raise RuntimeError(
+                "robot node 缺少连续夹爪字段，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
             )
+        now = time.time()
+        gripper_fields = observation_gripper_fields(
+            robot_observations,
+            joint_state,
+            timestamp=now,
         )
         frame = {
             "schema_version": SINGLE_SCHEMA_VERSION,
             "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
             "joint": _as_saved_value(joint_state[:7]),
-            "gripper": gripper_command,
-            "gripper_width": gripper_width,
-            "gripper_command_raw": gripper_command_raw,
-            "gripper_target_width": gripper_target_width,
-            "gripper_command_timestamp": gripper_command_timestamp,
-            "gripper_command_source": robot_observations.get("gripper_command_source", ""),
-            "timestamp": time.time(),
+            **gripper_fields,
+            "timestamp": now,
         }
         for name, rgb in rgb_frames.items():
             frame[f"{name}_image"] = rgb[:, :, ::-1].copy()
@@ -739,40 +719,26 @@ def _extract_arm_state(robot_observations: Dict[str, Any], joint_state: Any) -> 
         raise RuntimeError(
             "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
         )
-    if "gripper_command" not in robot_observations:
+    if not any(
+        key in robot_observations
+        for key in (
+            "gripper_closedness",
+            "gripper_target_width",
+        )
+    ):
         raise RuntimeError(
-            "robot node 缺少 gripper_command，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
+            "robot node 缺少连续夹爪字段，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
         )
 
-    gripper_command_value = _as_scalar(robot_observations["gripper_command"])
-    gripper_command = _as_binary_gripper_command(gripper_command_value)
-    gripper_command_raw = _as_scalar(
-        robot_observations.get("gripper_command_raw", gripper_command_value)
-    )
-    gripper_target_width = _as_scalar(
-        robot_observations.get(
-            "gripper_target_width",
-            MAX_GRIPPER_WIDTH * (1.0 - gripper_command_raw),
-        )
-    )
-    gripper_command_timestamp = _as_scalar(
-        robot_observations.get("gripper_command_timestamp", time.time())
-    )
-    gripper_width = _as_scalar(
-        robot_observations.get(
-            "gripper_width",
-            joint_state[-1] * MAX_GRIPPER_WIDTH,
-        )
+    gripper_fields = observation_gripper_fields(
+        robot_observations,
+        joint_state,
+        timestamp=time.time(),
     )
     return {
         "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
         "joint": _as_saved_value(joint_state[:7]),
-        "gripper": gripper_command,
-        "gripper_width": gripper_width,
-        "gripper_command_raw": gripper_command_raw,
-        "gripper_target_width": gripper_target_width,
-        "gripper_command_timestamp": gripper_command_timestamp,
-        "gripper_command_source": robot_observations.get("gripper_command_source", ""),
+        **gripper_fields,
     }
 
 
@@ -790,17 +756,3 @@ def _as_saved_value(value: Any):
     if hasattr(value, "tolist"):
         return value.tolist()
     return value
-
-
-def _as_scalar(value: Any) -> float:
-    if hasattr(value, "tolist"):
-        value = value.tolist()
-    if isinstance(value, (list, tuple)):
-        if not value:
-            raise ValueError("Expected scalar value, got empty sequence")
-        value = value[0]
-    return float(value)
-
-
-def _as_binary_gripper_command(value: Any) -> float:
-    return 1.0 if _as_scalar(value) >= GRIPPER_BINARY_THRESHOLD else 0.0
