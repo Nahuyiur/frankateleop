@@ -201,6 +201,25 @@ episode 编号会自动从 `{保存根目录}/{任务名}/` 下已有的最大�
 bash 6_record_fr3.sh pick_block
 ```
 
+如果通过总控脚本启动：
+
+```bash
+bash 0_record_fr3_pipeline.sh pick_block
+```
+
+总控脚本默认会给录制入口追加 `--enable-depth --depth-cameras all`，
+也就是开启所有配置相机的 aligned depth。若 USB 带宽不够，建议只开一两路：
+
+```bash
+bash 0_record_fr3_pipeline.sh pick_block --depth-cameras middle,left_wrist
+```
+
+临时关闭 depth：
+
+```bash
+bash 0_record_fr3_pipeline.sh pick_block --no-depth
+```
+
 如果要手动指定保存根目录：
 
 ```bash
@@ -265,11 +284,34 @@ joint
 gripper
 timestamp
 {camera_name}_image
+{camera_name}_depth    # 仅当 depth 录制开启
 ```
 
 这里保持和迁移包单臂录制脚本一致：视频只保存 RGB，`pkl.gz` 里每帧保存机器人状态和 `{camera_name}_image`。
 其中 `{camera_name}_image` 按迁移包习惯保存为 OpenCV BGR 图像。
+如果开启 depth，`{camera_name}_depth` 保存完整 aligned depth 图，shape 为 `(H, W)`，
+dtype 为 `float32`，单位是米，并且已经对齐到 color 图。
 `pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。`gripper` 保存真实夹爪宽度，单位和 Polymetis gripper width 一致。
+
+点云不作为主数据逐帧保存，因为它可以从 depth、RGB 和 `metadata.json`
+里的相机内参还原，而且逐帧保存稠密点云会非常占空间。开启 depth 后，每次保存
+episode 会额外生成：
+
+```text
+depth_proof/
+  summary.json
+  {camera_name}_frame000000_depth.png
+  {camera_name}_frame000000_cloud.ply
+```
+
+其中 `depth.png` 是深度伪彩色图，`cloud.ply` 是从当前帧的完整 depth
+按 stride 抽样还原的点云 proof。也可以对已经录好的 episode 重新生成：
+
+```bash
+conda activate franka_capture
+python -m franka_capture.scripts.verify_depth_episode \
+  /home/pnp/Desktop/franka_record_data/pick_block/3
+```
 
 录制入口固定使用 `30 Hz`，同时作为 RealSense 相机 stream FPS 和 mp4 保存 FPS。
 脚本不再提供 `--fps`、`--camera-fps` 或 `--video-fps` 覆盖。

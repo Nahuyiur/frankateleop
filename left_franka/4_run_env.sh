@@ -39,29 +39,13 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
 fi
 
 resolve_teleop_port() {
-    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTB2UWSZ-if00-port0"
-    local teleop_port="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}"
-
-    if [[ -z "$teleop_port" && -e "$default_port" ]]; then
-        teleop_port="$default_port"
-    fi
-
-    if [[ -z "$teleop_port" ]]; then
-        local ftdi_ports=()
-        if [[ -d /dev/serial/by-id ]]; then
-            mapfile -t ftdi_ports < <(find /dev/serial/by-id -maxdepth 1 -type l -name 'usb-FTDI_USB__-__Serial_Converter_*' | sort)
-        fi
-        if [[ "${#ftdi_ports[@]}" -eq 1 ]]; then
-            teleop_port="${ftdi_ports[0]}"
-        else
-            echo "❌ 未指定 LEFT_TELEOP_PORT/FRANKA_TELEOP_PORT，且找到 ${#ftdi_ports[@]} 个 FTDI 串口"
-            printf '  %s\n' "${ftdi_ports[@]}"
-            exit 1
-        fi
-    fi
+    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJTKP2-if00-port0"
+    local teleop_port="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-$default_port}}}"
 
     if [[ ! -e "$teleop_port" ]]; then
         echo "❌ 串口不存在：$teleop_port"
+        echo "   默认固定左臂同构臂串口：$default_port"
+        echo "   如需临时覆盖，请设置 LEFT_TELEOP_PORT/FRANKA_TELEOP_PORT/TELEOP_PORT。"
         exit 1
     fi
 

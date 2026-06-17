@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.13.29}"
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
@@ -22,6 +22,8 @@ RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="$LOG_ROOT/$RUN_ID"
 REMOTE_LOG_DIR="${BI_ARM_REMOTE_REPLAY_LOG_DIR:-$RIGHT_REPO/logs/bi_arm_replay/$RUN_ID}"
 SYNC_REMOTE_RIGHT_SCRIPTS="${BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS:-1}"
+LEFT_ROBOTIQ_COMPORT_OVERRIDE="${BI_ARM_LEFT_ROBOTIQ_COMPORT:-${LEFT_ROBOTIQ_COMPORT:-${FRANKA_ROBOTIQ_COMPORT:-}}}"
+RIGHT_ROBOTIQ_COMPORT_OVERRIDE="${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-${RIGHT_ROBOTIQ_COMPORT:-}}"
 
 DEFAULT_REPLAY_SPEED="${DEFAULT_REPLAY_SPEED:-1.0}"
 DEFAULT_GRIPPER_SPEED="${DEFAULT_GRIPPER_SPEED:-0.1}"
@@ -58,7 +60,7 @@ Default mode is dry-run: it starts/checks both robot nodes but sends no replay
 trajectory unless --execute is passed.
 
 Environment:
-  BI_ARM_RIGHT_SSH=192.168.1.131
+  BI_ARM_RIGHT_SSH=192.168.13.29
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_RIGHT_LOCAL_GRIPPER_PORT=15053
@@ -70,6 +72,8 @@ Environment:
   BI_ARM_LOCAL_SUDO_PASSWORD=
   BI_ARM_REMOTE_SUDO_PASSWORD=
   BI_ARM_REPLAY_MOVE_TO_INITIAL_POSE=0
+  BI_ARM_LEFT_ROBOTIQ_COMPORT=
+  BI_ARM_RIGHT_ROBOTIQ_COMPORT=
 
 This script starts local left_franka/1-3, starts remote right_franka/1-3
 through SSH, opens SSH tunnels for right ZMQ and right gripper gRPC, then runs
@@ -136,9 +140,12 @@ ssh_cmd() {
 
 sync_remote_right_scripts() {
     [[ "$SYNC_REMOTE_RIGHT_SCRIPTS" == "0" ]] && return 0
-    log "Syncing right_franka scripts and teleop launch/config files to remote repo ..."
+    log "Syncing right_franka, teleop, and Robotiq gripper files to remote repo ..."
     tar -C "$REPO_ROOT" -cf - \
         right_franka \
+        polymetis/polymetis/conf/launch_right_gripper.yaml \
+        polymetis/polymetis/conf/gripper/robotiq_2f.yaml \
+        polymetis/polymetis/python/polymetis/robot_client/robotiq_gripper/robotiq_gripper_client.py \
         teleop/experiments/launch_nodes.py \
         teleop/experiments/run_env.py \
         teleop/teleop/agents/teleop_agent.py \
@@ -620,6 +627,8 @@ start_local_script() {
         export PYTHONUNBUFFERED=1
         export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
+        export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
+        export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
         exec bash "$script"
     ) >"$logfile" 2>&1 &
 
@@ -646,6 +655,8 @@ cd $(q "$RIGHT_REPO/right_franka")
 export PYTHONUNBUFFERED=1
 export FRANKA_SUDO_PASSWORD=$(q "$REMOTE_SUDO_PASSWORD")
 export FRANKA_MOVE_TO_INITIAL_POSE=$(q "$MOVE_TO_INITIAL_POSE")
+export RIGHT_ROBOTIQ_COMPORT=$(q "$RIGHT_ROBOTIQ_COMPORT_OVERRIDE")
+export RIGHT_GRIPPER_SERVER_PORT=$(q "$RIGHT_GRIPPER_PORT")
 nohup setsid bash $(q "$script_name") > $(q "$logfile") 2>&1 < /dev/null &
 echo \$! > $(q "$pid_file")
 EOF

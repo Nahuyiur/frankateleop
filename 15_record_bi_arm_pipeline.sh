@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.13.29}"
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
@@ -18,12 +18,15 @@ REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
 MOVE_TO_INITIAL_POSE="${BI_ARM_MOVE_TO_INITIAL_POSE:-1}"
 LEFT_TELEOP_PORT_OVERRIDE="${BI_ARM_LEFT_TELEOP_PORT:-${LEFT_TELEOP_PORT:-}}"
 RIGHT_TELEOP_PORT_OVERRIDE="${BI_ARM_RIGHT_TELEOP_PORT:-${RIGHT_TELEOP_PORT:-}}"
+LEFT_ROBOTIQ_COMPORT_OVERRIDE="${BI_ARM_LEFT_ROBOTIQ_COMPORT:-${LEFT_ROBOTIQ_COMPORT:-${FRANKA_ROBOTIQ_COMPORT:-}}}"
+RIGHT_ROBOTIQ_COMPORT_OVERRIDE="${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-${RIGHT_ROBOTIQ_COMPORT:-}}"
 LOG_ROOT="${BI_ARM_LOG_ROOT:-$REPO_ROOT/logs/bi_arm_pipeline}"
 RUN_ID="$(date +%Y%m%d_%H%M%S)"
 LOG_DIR="$LOG_ROOT/$RUN_ID"
 REMOTE_LOG_DIR="${BI_ARM_REMOTE_LOG_DIR:-$RIGHT_REPO/logs/bi_arm_pipeline/$RUN_ID}"
 SYNC_REMOTE_RIGHT_SCRIPTS="${BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS:-1}"
 STACK_ONLY="${BI_ARM_STACK_ONLY:-0}"
+RIGHT_ONLY="${BI_ARM_RIGHT_ONLY:-0}"
 
 LOCAL_PIDS=()
 LOCAL_NAMES=()
@@ -52,7 +55,7 @@ Recording keys:
   k=keyframe, q=save and quit
 
 Environment:
-  BI_ARM_RIGHT_SSH=192.168.1.131
+  BI_ARM_RIGHT_SSH=192.168.13.29
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_READY_TIMEOUT=120
@@ -60,16 +63,21 @@ Environment:
   BI_ARM_CLEAN_STALE=1
   BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS=1
   BI_ARM_STACK_ONLY=0
+  BI_ARM_RIGHT_ONLY=0
   BI_ARM_SSH_PASSWORD=
   BI_ARM_LOCAL_SUDO_PASSWORD=
   BI_ARM_REMOTE_SUDO_PASSWORD=
   BI_ARM_MOVE_TO_INITIAL_POSE=1
   BI_ARM_LEFT_TELEOP_PORT=
   BI_ARM_RIGHT_TELEOP_PORT=
+  BI_ARM_LEFT_ROBOTIQ_COMPORT=
+  BI_ARM_RIGHT_ROBOTIQ_COMPORT=
 
 This script starts local left_franka/1-4, starts remote right_franka/1-4
 through SSH, opens an SSH tunnel from local 16001 to remote 6001, then runs
-the dual-arm recorder on this host.
+the dual-arm recorder on this host. With BI_ARM_RIGHT_ONLY=1 and
+BI_ARM_STACK_ONLY=1, it starts only the remote right_franka/1-4 stack plus the
+right-arm SSH tunnel for the GUI right-arm single recorder.
 EOF
 }
 
@@ -125,9 +133,12 @@ ssh_cmd() {
 
 sync_remote_right_scripts() {
     [[ "$SYNC_REMOTE_RIGHT_SCRIPTS" == "0" ]] && return 0
-    log "Syncing right_franka scripts and teleop launch/config files to remote repo ..."
+    log "Syncing right_franka, teleop, and Robotiq gripper files to remote repo ..."
     tar -C "$REPO_ROOT" -cf - \
         right_franka \
+        polymetis/polymetis/conf/launch_right_gripper.yaml \
+        polymetis/polymetis/conf/gripper/robotiq_2f.yaml \
+        polymetis/polymetis/python/polymetis/robot_client/robotiq_gripper/robotiq_gripper_client.py \
         teleop/experiments/launch_nodes.py \
         teleop/experiments/run_env.py \
         teleop/teleop/agents/teleop_agent.py \
@@ -210,11 +221,31 @@ kill_port_local() {
     local label="$1"
     local port="$2"
     local pids=()
-    if ! command -v lsof >/dev/null 2>&1; then
-        log "Skipping local port cleanup for $label; lsof is not installed."
-        return 0
+
+    if command -v lsof >/dev/null 2>&1; then
+        mapfile -t pids < <(
+            {
+                sudo_cmd lsof -t -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+                sudo_cmd lsof -t -i:"$port" 2>/dev/null || true
+            } | awk '/^[0-9]+$/ && !seen[$0]++'
+        )
     fi
-    mapfile -t pids < <(sudo_cmd lsof -t -i:"$port" 2>/dev/null || true)
+    if command -v fuser >/dev/null 2>&1; then
+        mapfile -t pids < <(
+            {
+                printf '%s\n' "${pids[@]}"
+                sudo_cmd fuser -n tcp "$port" 2>/dev/null | tr ' ' '\n' || true
+            } | awk '/^[0-9]+$/ && !seen[$0]++'
+        )
+    fi
+    if command -v ss >/dev/null 2>&1; then
+        mapfile -t pids < <(
+            {
+                printf '%s\n' "${pids[@]}"
+                ss -ltnp 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" {print}' | sed -nE 's/.*pid=([0-9]+).*/\1/p'
+            } | awk '/^[0-9]+$/ && !seen[$0]++'
+        )
+    fi
     ((${#pids[@]} == 0)) && return 0
     log "Cleaning stale local $label on port $port: ${pids[*]}"
     local pid
@@ -222,6 +253,39 @@ kill_port_local() {
         [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
         terminate_pid_tree "$pid" "$label"
     done
+    wait_local_port_free "$label" "$port" 5
+}
+
+wait_local_port_free() {
+    local label="$1"
+    local port="$2"
+    local timeout_sec="${3:-5}"
+    local started
+    started="$(date +%s)"
+    while true; do
+        if ! local_port_in_use "$port"; then
+            return 0
+        fi
+        if (( $(date +%s) - started >= timeout_sec )); then
+            log "WARNING: local $label port $port is still in use after cleanup."
+            return 0
+        fi
+        sleep 0.2
+    done
+}
+
+local_port_in_use() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1 && sudo_cmd lsof -t -i:"$port" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v fuser >/dev/null 2>&1 && sudo_cmd fuser -n tcp "$port" >/dev/null 2>&1; then
+        return 0
+    fi
+    if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | awk -v suffix=":$port" '$4 ~ suffix "$" {found=1} END {exit found ? 0 : 1}'; then
+        return 0
+    fi
+    return 1
 }
 
 kill_port_remote() {
@@ -233,10 +297,24 @@ label=$(q "$label")
 port=$(q "$port")
 remote_sudo_password=$(q "$REMOTE_SUDO_PASSWORD")
 if ! command -v lsof >/dev/null 2>&1; then
-    echo "Skipping remote port cleanup for \$label; lsof is not installed."
-    exit 0
+    :
 fi
-pids="\$(printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' lsof -t -i:"\$port" 2>/dev/null || lsof -t -i:"\$port" 2>/dev/null || true)"
+pids="\$(
+    {
+        if command -v lsof >/dev/null 2>&1; then
+            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' lsof -t -iTCP:"\$port" -sTCP:LISTEN 2>/dev/null || true
+            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' lsof -t -i:"\$port" 2>/dev/null || true
+            lsof -t -i:"\$port" 2>/dev/null || true
+        fi
+        if command -v fuser >/dev/null 2>&1; then
+            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' fuser -n tcp "\$port" 2>/dev/null | tr ' ' '\n' || true
+            fuser -n tcp "\$port" 2>/dev/null | tr ' ' '\n' || true
+        fi
+        if command -v ss >/dev/null 2>&1; then
+            ss -ltnp 2>/dev/null | awk -v suffix=":\$port" '\$4 ~ suffix "\$" {print}' | sed -nE 's/.*pid=([0-9]+).*/\1/p'
+        fi
+    } | awk '/^[0-9]+$/ && !seen[\$0]++'
+)"
 if [[ -n "\$pids" ]]; then
     echo "Cleaning stale remote \$label on port \$port: \$pids"
     kill -TERM \$pids 2>/dev/null || printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' kill -TERM \$pids 2>/dev/null || true
@@ -250,10 +328,14 @@ EOF
 
 cleanup_stale_ports() {
     [[ "${BI_ARM_CLEAN_STALE:-1}" == "0" ]] && return 0
-    log "Cleaning stale bi-arm ports ..."
-    kill_port_local "left robot server" "$LEFT_ROBOT_PORT"
-    kill_port_local "left gripper server" "$LEFT_GRIPPER_PORT"
-    kill_port_local "left ZMQ node" "$LEFT_ZMQ_PORT"
+    if [[ "$RIGHT_ONLY" == "1" ]]; then
+        log "Cleaning stale right-arm ports ..."
+    else
+        log "Cleaning stale bi-arm ports ..."
+        kill_port_local "left robot server" "$LEFT_ROBOT_PORT"
+        kill_port_local "left gripper server" "$LEFT_GRIPPER_PORT"
+        kill_port_local "left ZMQ node" "$LEFT_ZMQ_PORT"
+    fi
     kill_port_local "right ZMQ tunnel" "$RIGHT_LOCAL_ZMQ_PORT"
     kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
     kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
@@ -286,7 +368,11 @@ cleanup_all() {
     ((CLEANING_UP == 1)) && return 0
     CLEANING_UP=1
 
-    log "Cleaning up bi-arm pipeline processes ..."
+    if [[ "$RIGHT_ONLY" == "1" ]]; then
+        log "Cleaning up right-arm pipeline processes ..."
+    else
+        log "Cleaning up bi-arm pipeline processes ..."
+    fi
     cleanup_tunnel
     cleanup_local_started_processes
     cleanup_remote_started_processes
@@ -567,6 +653,8 @@ start_local_script() {
         export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
+        export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
+        export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
         exec bash "$script"
     ) >"$logfile" 2>&1 &
 
@@ -595,6 +683,8 @@ export PYTHONUNBUFFERED=1
 export FRANKA_SUDO_PASSWORD=$(q "$REMOTE_SUDO_PASSWORD")
 export FRANKA_MOVE_TO_INITIAL_POSE=$(q "$MOVE_TO_INITIAL_POSE")
 export RIGHT_TELEOP_PORT=$(q "$RIGHT_TELEOP_PORT_OVERRIDE")
+export RIGHT_ROBOTIQ_COMPORT=$(q "$RIGHT_ROBOTIQ_COMPORT_OVERRIDE")
+export RIGHT_GRIPPER_SERVER_PORT=$(q "$RIGHT_GRIPPER_PORT")
 nohup setsid bash $(q "$script_name") > $(q "$logfile") 2>&1 < /dev/null &
 echo \$! > $(q "$pid_file")
 EOF
@@ -620,6 +710,8 @@ check_local_script() {
         export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
+        export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
+        export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
         bash "$script" "$@"
     ) >"$logfile" 2>&1; then
         abort "$label failed." "$logfile"
@@ -643,6 +735,8 @@ export PYTHONUNBUFFERED=1
 export FRANKA_SUDO_PASSWORD=$(q "$REMOTE_SUDO_PASSWORD")
 export FRANKA_MOVE_TO_INITIAL_POSE=$(q "$MOVE_TO_INITIAL_POSE")
 export RIGHT_TELEOP_PORT=$(q "$RIGHT_TELEOP_PORT_OVERRIDE")
+export RIGHT_ROBOTIQ_COMPORT=$(q "$RIGHT_ROBOTIQ_COMPORT_OVERRIDE")
+export RIGHT_GRIPPER_SERVER_PORT=$(q "$RIGHT_GRIPPER_PORT")
 bash $(q "$script_name") "$@" > $(q "$logfile") 2>&1
 EOF
 )
@@ -709,7 +803,11 @@ run_recording() {
 
 wait_for_external_recorder() {
     log "BI_ARM_STACK_READY_FOR_GUI"
-    log "Dual-arm stack is ready for an external recorder. Stop this process to clean up."
+    if [[ "$RIGHT_ONLY" == "1" ]]; then
+        log "Right-arm stack is ready for an external GUI recorder. Stop this process to clean up."
+    else
+        log "Dual-arm stack is ready for an external recorder. Stop this process to clean up."
+    fi
     while true; do
         sleep 3600 &
         wait "$!"
@@ -744,6 +842,11 @@ main() {
     log "Output root: $output_root"
     log "Move to initial joint pose: $MOVE_TO_INITIAL_POSE"
     log "Stack-only mode: $STACK_ONLY"
+    log "Right-only mode: $RIGHT_ONLY"
+
+    if [[ "$RIGHT_ONLY" == "1" && "$STACK_ONLY" != "1" ]]; then
+        abort "BI_ARM_RIGHT_ONLY=1 is only supported together with BI_ARM_STACK_ONLY=1 for GUI use."
+    fi
 
     setup_ssh_askpass
     prepare_sudo
@@ -751,21 +854,38 @@ main() {
     sync_remote_right_scripts
     cleanup_stale_ports
 
-    start_local_script "left 1_launch_robot" "$REPO_ROOT/left_franka/1_launch_robot.sh" check_robot_grpc_ready_local "$LEFT_ROBOT_PORT"
+    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        kill_port_local "left robot server" "$LEFT_ROBOT_PORT"
+        start_local_script "left 1_launch_robot" "$REPO_ROOT/left_franka/1_launch_robot.sh" check_robot_grpc_ready_local "$LEFT_ROBOT_PORT"
+    fi
+    kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
     start_remote_script "right 1_launch_robot" "1_launch_robot.sh" check_robot_grpc_ready_remote "$RIGHT_ROBOT_PORT"
 
-    start_local_script "left 2_launch_gripper" "$REPO_ROOT/left_franka/2_launch_gripper.sh" check_gripper_grpc_ready_local "$LEFT_GRIPPER_PORT"
+    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        kill_port_local "left gripper server" "$LEFT_GRIPPER_PORT"
+        start_local_script "left 2_launch_gripper" "$REPO_ROOT/left_franka/2_launch_gripper.sh" check_gripper_grpc_ready_local "$LEFT_GRIPPER_PORT"
+    fi
+    kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
     start_remote_script "right 2_launch_gripper" "2_launch_gripper.sh" check_gripper_grpc_ready_remote "$RIGHT_GRIPPER_PORT"
 
-    start_local_script "left 3_launch_node" "$REPO_ROOT/left_franka/3_launch_node.sh" check_robot_zmq_ready_local "$LEFT_ZMQ_PORT"
+    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        kill_port_local "left ZMQ node" "$LEFT_ZMQ_PORT"
+        start_local_script "left 3_launch_node" "$REPO_ROOT/left_franka/3_launch_node.sh" check_robot_zmq_ready_local "$LEFT_ZMQ_PORT"
+    fi
+    kill_port_remote "right ZMQ node" "$RIGHT_REMOTE_ZMQ_PORT"
     start_remote_script "right 3_launch_node" "3_launch_node.sh" check_robot_zmq_ready_remote "$RIGHT_REMOTE_ZMQ_PORT"
 
+    kill_port_local "right ZMQ tunnel" "$RIGHT_LOCAL_ZMQ_PORT"
     start_tunnel
 
-    check_local_script "left 4_run_env alignment" "$REPO_ROOT/left_franka/4_run_env.sh" --check-only
+    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        check_local_script "left 4_run_env alignment" "$REPO_ROOT/left_franka/4_run_env.sh" --check-only
+    fi
     check_remote_script "right 4_run_env alignment" "4_run_env.sh" --check-only
 
-    start_local_script "left 4_run_env" "$REPO_ROOT/left_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/left_4_run_env.log"
+    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        start_local_script "left 4_run_env" "$REPO_ROOT/left_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/left_4_run_env.log"
+    fi
     start_remote_script "right 4_run_env" "4_run_env.sh" check_env_loop_ready_remote "$REMOTE_LOG_DIR/right_4_run_env.log"
 
     if [[ "$STACK_ONLY" == "1" ]]; then

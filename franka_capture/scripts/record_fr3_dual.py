@@ -85,7 +85,7 @@ def _next_episode_index(output_root: str, task: str, start_index: Optional[int])
 
 def _fixed_fps_camera_configs():
     return {
-        name: replace(config, fps=FIXED_RECORDING_FPS)
+        name: replace(config, fps=FIXED_RECORDING_FPS, read_timeout_ms=3000)
         for name, config in DEFAULT_CAMERAS.items()
     }
 
@@ -250,7 +250,7 @@ def main() -> None:
 
     try:
         camera_configs = _fixed_fps_camera_configs()
-        cameras = create_realsense_cameras(camera_configs)
+        cameras = create_realsense_cameras(camera_configs, allow_missing=True)
         camera_names = list(cameras.keys())
         camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
 
@@ -275,6 +275,8 @@ def main() -> None:
         print(f"Video FPS: {FIXED_RECORDING_FPS}")
         print(f"Task: {args.task}")
         print(f"Next episode index: {next_index}")
+        if not camera_names:
+            print("No RealSense cameras connected; recording robot state only.")
         print(
             "Click the RGB window first. "
             "s=start/resume, w=pause, e=end/save episode, "

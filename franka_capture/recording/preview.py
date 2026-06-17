@@ -42,4 +42,27 @@ def show_rgb_preview(window_name: str, image_rgb: np.ndarray) -> int:
 
     if image_rgb is not None:
         cv2.imshow(window_name, image_rgb[:, :, ::-1])
+    else:
+        placeholder = np.zeros((240, 640, 3), dtype=np.uint8)
+        cv2.putText(
+            placeholder,
+            "No RealSense cameras connected",
+            (36, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (220, 220, 220),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            placeholder,
+            "s=start, e=save, q=quit",
+            (36, 160),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (160, 160, 160),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.imshow(window_name, placeholder)
     return cv2.waitKey(1) & 0xFF

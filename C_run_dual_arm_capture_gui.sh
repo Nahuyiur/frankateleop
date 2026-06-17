@@ -25,21 +25,40 @@ if [[ -z "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" && -f "$DEFAULT_SUDO_PASSWORD_FILE
     export FRANKA_GUI_SUDO_PASSWORD_FILE="$DEFAULT_SUDO_PASSWORD_FILE"
 fi
 
+export BI_ARM_RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.13.29}"
+export BI_ARM_RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
+export BI_ARM_LEFT_ZMQ_PORT="${BI_ARM_LEFT_ZMQ_PORT:-6002}"
+export BI_ARM_RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
+export BI_ARM_LEFT_ROBOTIQ_COMPORT="${BI_ARM_LEFT_ROBOTIQ_COMPORT:-${LEFT_ROBOTIQ_COMPORT:-}}"
+export BI_ARM_RIGHT_ROBOTIQ_COMPORT="${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-${RIGHT_ROBOTIQ_COMPORT:-}}"
+export BI_ARM_SSH_PASSWORD="${BI_ARM_SSH_PASSWORD:-}"
+export BI_ARM_LOCAL_SUDO_PASSWORD="${BI_ARM_LOCAL_SUDO_PASSWORD:-}"
+export BI_ARM_REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
+export BI_ARM_STACK_ONLY=1
+export BI_ARM_RIGHT_ONLY=0
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<EOF
 用法:
-  bash A_run_single_arm_capture_gui.sh [GUI参数...]
+  bash C_run_dual_arm_capture_gui.sh [GUI参数...]
 
 示例:
-  bash A_run_single_arm_capture_gui.sh
-  bash A_run_single_arm_capture_gui.sh --mock
+  bash C_run_dual_arm_capture_gui.sh
+  bash C_run_dual_arm_capture_gui.sh --mock
 
-单臂 GUI 固定相机:
-  left_wrist,left,middle
+C 双臂/双臂联动 GUI 会优先尝试全部配置相机:
+  left_wrist,left,middle,right,right_wrist
+  如果某路相机未连接或被占用，会跳过缺失相机继续启动。
 
 默认:
   固定录制频率=30 Hz
   固定保存根目录=$DEFAULT_OUTPUT_ROOT
+  左臂 ZMQ 端口=$BI_ARM_LEFT_ZMQ_PORT
+  右臂本地 ZMQ 隧道端口=$BI_ARM_RIGHT_LOCAL_ZMQ_PORT
+  右机=$BI_ARM_RIGHT_SSH
+  右机仓库=$BI_ARM_RIGHT_REPO
+  左臂 Robotiq 串口=自动检测/默认；如需固定，设置 BI_ARM_LEFT_ROBOTIQ_COMPORT
+  右臂 Robotiq 串口=自动检测；如需固定，设置 BI_ARM_RIGHT_ROBOTIQ_COMPORT
 EOF
     exit 0
 fi
@@ -72,7 +91,7 @@ if [[ "${QT_QPA_PLATFORM:-}" != "offscreen" && "${XDG_SESSION_TYPE:-}" == "x11" 
   sudo apt-get install -y libxcb-cursor0
 
 安装完成后重新启动：
-  bash A_run_single_arm_capture_gui.sh
+  bash C_run_dual_arm_capture_gui.sh
 EOF
         exit 1
     fi
@@ -81,13 +100,28 @@ fi
 echo ">>> 使用仓库根目录 franka_gui ..."
 echo ">>> 默认保存根目录: $DEFAULT_OUTPUT_ROOT"
 echo ">>> 固定录制频率: 30 Hz"
-echo ">>> 固定单臂相机: left_wrist,left,middle"
+echo ">>> C 双臂相机: 优先尝试全部配置相机；缺失则跳过"
+echo ">>> 左臂 ZMQ 端口: $BI_ARM_LEFT_ZMQ_PORT"
+echo ">>> 右臂本地 ZMQ 隧道端口: $BI_ARM_RIGHT_LOCAL_ZMQ_PORT"
+echo ">>> 右机: $BI_ARM_RIGHT_SSH"
+echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
+if [[ -n "${BI_ARM_LEFT_ROBOTIQ_COMPORT:-}" ]]; then
+    echo ">>> 左臂 Robotiq 串口: $BI_ARM_LEFT_ROBOTIQ_COMPORT"
+else
+    echo ">>> 左臂 Robotiq 串口: 默认/自动检测"
+fi
+if [[ -n "${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-}" ]]; then
+    echo ">>> 右臂 Robotiq 串口: $BI_ARM_RIGHT_ROBOTIQ_COMPORT"
+else
+    echo ">>> 右臂 Robotiq 串口: 自动检测远端唯一 RS485 设备"
+fi
 if [[ -n "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" ]]; then
     echo ">>> sudo 密码文件: $FRANKA_GUI_SUDO_PASSWORD_FILE"
 fi
 
 cd "$REPO_ROOT"
 python -m franka_gui.app \
-    --mode single \
-    --camera-names left_wrist,left,middle \
+    --mode dual \
+    --left-port "$BI_ARM_LEFT_ZMQ_PORT" \
+    --right-port "$BI_ARM_RIGHT_LOCAL_ZMQ_PORT" \
     "$@"

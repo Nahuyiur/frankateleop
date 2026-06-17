@@ -6,19 +6,25 @@
 ## 启动
 
 ```bash
-bash A_run_single_arm_capture_gui.sh
+bash A_run_left_arm_capture_gui.sh
 ```
 
 无硬件测试界面：
 
 ```bash
-bash A_run_single_arm_capture_gui.sh --mock
+bash A_run_left_arm_capture_gui.sh --mock
+```
+
+右臂单臂 GUI：
+
+```bash
+bash B_run_right_arm_capture_gui.sh
 ```
 
 双臂 GUI：
 
 ```bash
-bash B_run_bi_arm_capture_gui.sh
+bash C_run_dual_arm_capture_gui.sh
 ```
 
 `14_run_capture_gui.sh` 仅作为旧入口兼容，会转发到 A 单臂 GUI。
@@ -29,8 +35,9 @@ bash B_run_bi_arm_capture_gui.sh
 /home/pnp/Desktop/franka_record_data/<task>/<episode_index>/
 ```
 
-GUI 采集模式固定使用这个根目录。A 单臂 GUI 固定使用
-`left_wrist/left/middle` 三路相机；B 双臂 GUI 使用全部配置相机。
+GUI 采集模式固定使用这个根目录。A 左臂单臂 GUI 固定使用
+`left_wrist/left/middle` 三路相机；B 右臂单臂 GUI 固定使用
+`middle/right/right_wrist` 三路相机；C 双臂 GUI 使用全部配置相机。
 新增任务时只需要输入任务名称，GUI 会创建：
 
 ```text
@@ -45,7 +52,8 @@ GUI 采集频率固定为 `30 Hz`。界面不提供 FPS 切换，启动脚本也
 ## 使用流程
 
 1. 打开 GUI 后，右侧会启动相机预览。
-2. 左侧点击 `启动 1-4`，GUI 会按顺序启动机器人、夹爪、robot node 和 teleop env。
+2. 左侧点击启动按钮：A 为 `启动 1-4`，B 为 `启动右臂 1-4`，
+   C 为 `启动双臂 1-4`。GUI 会按对应模式启动机器人、夹爪、robot node 和 teleop env。
    如果终端提示 sudo 密码，需要回到启动 GUI 的那个终端输入一次；脚本 1 启动
    Franka realtime server 时需要 sudo 权限。
 

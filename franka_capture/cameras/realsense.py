@@ -1,6 +1,7 @@
 """RealSense camera capture for RGB and optional aligned depth."""
 
-from typing import Dict, Iterable, Optional, Tuple
+import sys
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
@@ -11,10 +12,24 @@ def _load_rs():
     return rs
 
 
-def list_devices():
+def _query_device_serials() -> Tuple[List[str], List[str]]:
     rs = _load_rs()
     devices = rs.context().query_devices()
-    return [dev.get_info(rs.camera_info.serial_number) for dev in devices]
+    serials: List[str] = []
+    errors: List[str] = []
+    for index, dev in enumerate(devices):
+        try:
+            serials.append(dev.get_info(rs.camera_info.serial_number))
+        except Exception as exc:
+            errors.append(f"device[{index}] serial query failed: {exc}")
+    return serials, errors
+
+
+def list_devices():
+    serials, errors = _query_device_serials()
+    for error in errors:
+        print(f"WARNING: RealSense {error}", file=sys.stderr)
+    return serials
 
 
 def _intrinsics_to_dict(intrinsics):
@@ -46,15 +61,9 @@ class RealSenseCapture:
         depth: bool = False,
         align_depth: bool = True,
         flip: bool = False,
-        read_timeout_ms: int = 15000,
+        read_timeout_ms: int = 3000,
     ) -> None:
         rs = _load_rs()
-        connected = list_devices()
-        if serial_number not in connected:
-            raise RuntimeError(
-                f"RealSense camera {name} with serial {serial_number} is not connected. "
-                f"Connected devices: {connected}"
-            )
 
         self.name = name
         self.serial_number = serial_number
@@ -159,23 +168,43 @@ class RealSenseCapture:
         )
 
 
-def create_realsense_cameras(camera_configs: Dict[str, object]):
+def create_realsense_cameras(camera_configs: Dict[str, object], allow_missing: bool = False):
     cameras = {}
-    try:
-        for name, config in camera_configs.items():
-            if hasattr(config, "to_dict"):
-                kwargs = config.to_dict()
-            elif isinstance(config, dict):
-                kwargs = dict(config)
-            else:
-                raise TypeError(f"Unsupported camera config for {name}: {type(config)}")
-            kwargs.setdefault("name", name)
+    available_serials = None
+    if allow_missing:
+        serials, errors = _query_device_serials()
+        available_serials = set(serials)
+        for error in errors:
+            print(f"WARNING: RealSense {error}", file=sys.stderr)
+    for name, config in camera_configs.items():
+        if hasattr(config, "to_dict"):
+            kwargs = config.to_dict()
+        elif isinstance(config, dict):
+            kwargs = dict(config)
+        else:
+            raise TypeError(f"Unsupported camera config for {name}: {type(config)}")
+        kwargs.setdefault("name", name)
+        serial_number = kwargs.get("serial_number")
+        if (
+            allow_missing
+            and available_serials is not None
+            and serial_number not in available_serials
+        ):
+            print(
+                "WARNING: skipping unavailable RealSense camera "
+                f"{name}: serial {serial_number} is not connected"
+            )
+            continue
+        try:
             cameras[name] = RealSenseCapture(**kwargs)
-        return cameras
-    except Exception:
-        for camera in cameras.values():
-            camera.close()
-        raise
+        except Exception as exc:
+            if allow_missing:
+                print(f"WARNING: skipping unavailable RealSense camera {name}: {exc}")
+                continue
+            for camera in cameras.values():
+                camera.close()
+            raise
+    return cameras
 
 
 def close_cameras(cameras: Iterable[RealSenseCapture]) -> None:

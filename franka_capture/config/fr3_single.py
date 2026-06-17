@@ -28,7 +28,7 @@ class CameraConfig:
     depth: bool = False
     align_depth: bool = True
     flip: bool = False
-    read_timeout_ms: int = 15000
+    read_timeout_ms: int = 3000
 
     def to_dict(self):
         return asdict(self)
@@ -47,6 +47,7 @@ class RecordingConfig:
 DEFAULT_ROBOT = RobotEndpointConfig()
 SINGLE_SCHEMA_VERSION = "franka_single_v1"
 SINGLE_GUI_CAMERA_NAMES = ("left_wrist", "left", "middle")
+RIGHT_GUI_CAMERA_NAMES = ("middle", "right", "right_wrist")
 
 # Update these serial numbers after running the camera self-check on the target
 # machine. Depth is disabled by default to minimize USB bandwidth pressure.

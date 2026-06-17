@@ -1,10 +1,14 @@
 """Record FR3 robot-node observations with configured RealSense cameras."""
 
+from __future__ import annotations
+
 import argparse
 import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Optional
+
+import numpy as np
 
 from franka_capture.cameras.realsense import create_realsense_cameras
 from franka_capture.config.fr3_single import (
@@ -35,6 +39,38 @@ def parse_args():
     parser.add_argument("--host", default=DEFAULT_ROBOT.host)
     parser.add_argument("--port", type=int, default=DEFAULT_ROBOT.port)
     parser.add_argument("--timeout-ms", type=int, default=DEFAULT_ROBOT.timeout_ms)
+    parser.add_argument(
+        "--enable-depth",
+        action="store_true",
+        help="Enable aligned depth recording for selected cameras.",
+    )
+    parser.add_argument(
+        "--no-depth",
+        action="store_true",
+        help="Disable depth recording even if the pipeline enables it by default.",
+    )
+    parser.add_argument(
+        "--depth-cameras",
+        default="all",
+        help="Comma-separated camera names for depth recording, or 'all'.",
+    )
+    parser.add_argument(
+        "--no-depth-proof",
+        action="store_true",
+        help="Do not write depth_proof PNG/PLY/summary files after saving.",
+    )
+    parser.add_argument(
+        "--pointcloud-stride",
+        type=int,
+        default=4,
+        help="Pixel stride used for proof PLY point clouds. Raw depth is still saved fully.",
+    )
+    parser.add_argument(
+        "--pointcloud-max-points",
+        type=int,
+        default=80000,
+        help="Maximum points per proof PLY file.",
+    )
     return parser.parse_args()
 
 
@@ -75,9 +111,29 @@ def _next_episode_index(output_root: str, task: str, start_index: Optional[int])
     return next_index
 
 
-def _fixed_fps_camera_configs():
+def _resolve_depth_camera_names(spec: str, camera_names: list[str]) -> set[str]:
+    spec = (spec or "all").strip()
+    if spec in {"all", "*"}:
+        return set(camera_names)
+
+    names = {name.strip() for name in spec.split(",") if name.strip()}
+    unknown = sorted(names - set(camera_names))
+    if unknown:
+        raise ValueError(
+            f"Unknown depth camera(s): {unknown}. Available cameras: {camera_names}"
+        )
+    return names
+
+
+def _fixed_fps_camera_configs(depth_camera_names: set[str]):
     return {
-        name: replace(config, fps=FIXED_RECORDING_FPS)
+        name: replace(
+            config,
+            fps=FIXED_RECORDING_FPS,
+            depth=(name in depth_camera_names),
+            align_depth=True if name in depth_camera_names else config.align_depth,
+            read_timeout_ms=3000,
+        )
         for name, config in DEFAULT_CAMERAS.items()
     }
 
@@ -91,6 +147,19 @@ def main() -> None:
     writer = None
     record_flag = False
     next_index = _next_episode_index(args.output_root, args.task, args.index)
+    configured_camera_names = list(DEFAULT_CAMERAS.keys())
+    depth_camera_names = set()
+    if args.enable_depth and not args.no_depth:
+        depth_camera_names = _resolve_depth_camera_names(
+            args.depth_cameras,
+            configured_camera_names,
+        )
+    elif not args.no_depth:
+        depth_camera_names = {
+            name for name, config in DEFAULT_CAMERAS.items() if config.depth
+        }
+    depth_enabled = bool(depth_camera_names)
+    camera_metadata = {}
 
     def start_episode() -> None:
         nonlocal writer, record_flag, next_index
@@ -113,6 +182,18 @@ def main() -> None:
                     "gripper_semantics": "binary_closedness_command",
                     "gripper_values": {"0": "open", "1": "closed"},
                     "gripper_command_threshold": GRIPPER_BINARY_THRESHOLD,
+                    "cameras": camera_metadata,
+                    "depth_recording": {
+                        "enabled": depth_enabled,
+                        "camera_names": sorted(depth_camera_names),
+                        "storage": "per-frame {camera_name}_depth float32 image",
+                        "units": "meters",
+                        "aligned_to": "color",
+                        "pointcloud_derivation": "depth + RGB + camera intrinsics",
+                        "depth_proof_dir": None
+                        if args.no_depth_proof or not depth_enabled
+                        else "depth_proof",
+                    },
                 },
             )
             print(f"Start recording episode {next_index}: {writer.output_dir}")
@@ -128,9 +209,32 @@ def main() -> None:
                 print("No active episode to save")
             return
         record_flag = False
+        frame_count = len(writer.frames)
+        output_index = writer.index
+        frames = writer.frames
+        metadata = dict(writer.metadata or {})
         writer.update_metadata({"ended_at_unix": time.time()})
         output_dir = writer.finish()
-        print(f"Saved {len(writer.frames)} frames to {output_dir}")
+        if depth_enabled and not args.no_depth_proof:
+            try:
+                from franka_capture.recording.depth_proof import write_depth_proof
+
+                summary = write_depth_proof(
+                    output_dir,
+                    output_index,
+                    frames,
+                    metadata,
+                    stride=args.pointcloud_stride,
+                    max_points=args.pointcloud_max_points,
+                )
+                proof_cameras = sorted(summary.get("cameras", {}).keys())
+                print(
+                    "Depth proof written to "
+                    f"{output_dir / 'depth_proof'} for cameras: {proof_cameras}"
+                )
+            except Exception as exc:
+                print(f"WARNING: failed to write depth proof files: {exc}")
+        print(f"Saved {frame_count} frames to {output_dir}")
         writer = None
 
     def discard_episode() -> None:
@@ -147,14 +251,28 @@ def main() -> None:
         writer = None
 
     try:
-        camera_configs = _fixed_fps_camera_configs()
-        cameras = create_realsense_cameras(camera_configs)
+        camera_configs = _fixed_fps_camera_configs(depth_camera_names)
+        cameras = create_realsense_cameras(camera_configs, allow_missing=True)
         camera_names = list(cameras.keys())
+        skipped_depth_cameras = sorted(depth_camera_names - set(camera_names))
+        if skipped_depth_cameras:
+            print(
+                "WARNING: depth disabled for unavailable camera(s): "
+                f"{skipped_depth_cameras}"
+            )
+        depth_camera_names &= set(camera_names)
+        depth_enabled = bool(depth_camera_names)
+        camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
         robot = RobotZMQClient(args.host, args.port, timeout_ms=args.timeout_ms)
 
         print(f"Robot node: tcp://{args.host}:{args.port}")
         print(f"Robot DOFs: {robot.num_dofs()}")
         print(f"Connected cameras: {camera_names}")
+        print(
+            "Depth recording: "
+            f"{'enabled' if depth_enabled else 'disabled'}"
+            + (f" ({sorted(depth_camera_names)})" if depth_enabled else "")
+        )
         print(f"Camera FPS: {FIXED_RECORDING_FPS}")
         print(f"Video FPS: {FIXED_RECORDING_FPS}")
         print(f"Task: {args.task}")
@@ -164,12 +282,17 @@ def main() -> None:
             "s=start/resume, w=pause, e=end/save episode, "
             "d=discard episode, k=keyframe, q=quit/save."
         )
+        if not camera_names:
+            print("No RealSense cameras connected; recording robot state only.")
 
         while True:
             rgb_frames = {}
+            depth_frames = {}
             for name, camera in cameras.items():
-                rgb, _ = camera.read()
+                rgb, depth = camera.read()
                 rgb_frames[name] = rgb
+                if depth is not None:
+                    depth_frames[name] = depth
 
             preview = concatenate_rgb_images(
                 [rgb_frames[name] for name in camera_names],
@@ -250,6 +373,11 @@ def main() -> None:
             }
             for name in camera_names:
                 frame[f"{name}_image"] = rgb_frames[name][:, :, ::-1].copy()
+                depth = depth_frames.get(name)
+                if depth is not None:
+                    if depth.ndim == 3 and depth.shape[2] == 1:
+                        depth = depth[:, :, 0]
+                    frame[f"{name}_depth"] = np.asarray(depth, dtype=np.float32).copy()
 
             writer.append(frame, rgb_frames)
     finally:

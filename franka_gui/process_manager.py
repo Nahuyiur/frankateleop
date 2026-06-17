@@ -36,10 +36,15 @@ class ProcessManager(QtCore.QObject):
     ) -> None:
         super().__init__(parent)
         self.repo_root = repo_root
-        if mode not in {"single", "dual"}:
+        if mode not in {"single", "right", "dual"}:
             raise ValueError(f"Unsupported process manager mode: {mode}")
         self.mode = mode
-        self.log_root = repo_root / "logs" / ("fr3_gui_dual" if mode == "dual" else "fr3_gui")
+        log_roots = {
+            "single": "fr3_gui",
+            "right": "fr3_gui_right",
+            "dual": "fr3_gui_dual",
+        }
+        self.log_root = repo_root / "logs" / log_roots[mode]
         self.ready_timeout = int(os.environ.get("GUI_READY_TIMEOUT", "90"))
         self._processes: Dict[str, ManagedProcess] = {}
         self._lock = threading.Lock()
@@ -64,8 +69,9 @@ class ProcessManager(QtCore.QObject):
         self._stop_stack_worker(False)
 
     def stop_teleop_env(self) -> None:
-        if self.mode == "dual":
-            self.status_changed.emit("双臂 GUI 模式下请使用“停止全部”清理左右遥操作栈。")
+        if self.mode in {"right", "dual"}:
+            label = "右臂" if self.mode == "right" else "双臂"
+            self.status_changed.emit(f"{label} GUI 模式下请使用“停止全部”清理遥操作栈。")
             return
         threading.Thread(target=self._stop_one_worker, args=("4_run_env",), daemon=True).start()
 
@@ -82,6 +88,9 @@ class ProcessManager(QtCore.QObject):
         try:
             if self.mode == "dual":
                 self._start_dual_stack_worker()
+                return
+            if self.mode == "right":
+                self._start_right_stack_worker()
                 return
             self.stack_state_changed.emit("starting")
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
@@ -126,12 +135,32 @@ class ProcessManager(QtCore.QObject):
             self._stop_stack_worker(False)
             self.stack_state_changed.emit("error")
 
+    def _start_right_stack_worker(self) -> None:
+        try:
+            self.stack_state_changed.emit("starting")
+            self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
+            self._run_log_dir.mkdir(parents=True, exist_ok=True)
+            self._emit_log(f"日志目录: {self._run_log_dir}")
+            self._start_right_stack_script()
+            self.stack_state_changed.emit("running")
+            self.status_changed.emit("右臂机器人栈已启动: right 1-4 ready")
+        except Exception as exc:
+            self.error.emit(str(exc))
+            self._stop_stack_worker(False)
+            self.stack_state_changed.emit("error")
+
     def _stop_stack_worker(self, emit_done: bool) -> None:
         if self.mode == "dual":
             self._stop_one("15_bi_arm_stack")
             if emit_done:
                 self.stack_state_changed.emit("stopped")
                 self.status_changed.emit("双臂机器人栈已停止")
+            return
+        if self.mode == "right":
+            self._stop_one("15_right_arm_stack")
+            if emit_done:
+                self.stack_state_changed.emit("stopped")
+                self.status_changed.emit("右臂机器人栈已停止")
             return
         for label in ("4_run_env", "3_launch_node", "2_launch_gripper", "1_launch_robot"):
             self._stop_one(label)
@@ -183,6 +212,7 @@ class ProcessManager(QtCore.QObject):
             **os.environ,
             "PYTHONUNBUFFERED": "1",
             "BI_ARM_STACK_ONLY": "1",
+            "BI_ARM_RIGHT_ONLY": "0",
         }
         gui_password = _read_sudo_password()
         if gui_password:
@@ -197,6 +227,48 @@ class ProcessManager(QtCore.QObject):
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path), "gui_stack"],
+                cwd=self.repo_root,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+            )
+        finally:
+            log.close()
+        managed = ManagedProcess(label, script_path.name, proc, log_path)
+        with self._lock:
+            self._processes[label] = managed
+        self._wait_until_ready(label, managed, self._check_bi_arm_stack_ready)
+        self._emit_log(f"{label} ready")
+
+    def _start_right_stack_script(self) -> None:
+        assert self._run_log_dir is not None
+        label = "15_right_arm_stack"
+        log_path = self._run_log_dir / f"{label}.log"
+        script_path = self.repo_root / "15_record_bi_arm_pipeline.sh"
+        if not script_path.exists():
+            raise FileNotFoundError(f"未找到右臂启动脚本: {script_path}")
+        self._emit_log("启动 15_record_bi_arm_pipeline.sh right-only stack-only ...")
+        log = log_path.open("ab")
+        env = {
+            **os.environ,
+            "PYTHONUNBUFFERED": "1",
+            "BI_ARM_STACK_ONLY": "1",
+            "BI_ARM_RIGHT_ONLY": "1",
+        }
+        gui_password = _read_sudo_password()
+        if gui_password:
+            for key in (
+                "BI_ARM_LOCAL_SUDO_PASSWORD",
+                "BI_ARM_REMOTE_SUDO_PASSWORD",
+                "BI_ARM_SSH_PASSWORD",
+            ):
+                if not env.get(key):
+                    env[key] = gui_password
+            self._emit_log("右臂启动已使用 GUI 私有密码配置传递 sudo/SSH 凭据")
+        try:
+            proc = subprocess.Popen(
+                ["bash", str(script_path), "gui_right_stack"],
                 cwd=self.repo_root,
                 stdout=log,
                 stderr=subprocess.STDOUT,

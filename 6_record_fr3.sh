@@ -59,6 +59,8 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || "$#" -lt 1 ]]; then
     echo "示例: bash 6_record_fr3.sh pick_block"
     echo "示例: bash 6_record_fr3.sh pick_block /home/pnp/Desktop/franka_record_data --port 6001"
     echo "可选起始编号: bash 6_record_fr3.sh pick_block --index 10"
+    echo "可选深度录制: bash 6_record_fr3.sh pick_block --enable-depth --depth-cameras middle,left_wrist"
+    echo "关闭深度录制: bash 6_record_fr3.sh pick_block --no-depth"
     echo "固定录制频率: ${FIXED_RECORDING_FPS} Hz"
     echo "录制键位: s=开始/继续, w=暂停, e=保存当前episode并等待下一次s, d=丢弃当前episode, k=关键帧, q=保存并退出"
     exit 0

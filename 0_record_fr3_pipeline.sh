@@ -23,6 +23,8 @@ Usage:
 Examples:
   bash 0_record_fr3_pipeline.sh pick_block
   bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data --timeout-ms 3000
+  bash 0_record_fr3_pipeline.sh pick_block --depth-cameras middle,left_wrist
+  bash 0_record_fr3_pipeline.sh pick_block --no-depth
 
 Recording keys:
   s=start/resume, w=pause, e=save current episode, d=discard current episode,
@@ -31,6 +33,8 @@ Recording keys:
 Environment:
   PIPELINE_READY_TIMEOUT=90      seconds to wait for each startup step
   PIPELINE_LOG_ROOT=...          directory for background script logs
+  PIPELINE_ENABLE_DEPTH=0        enable aligned depth recording when set to 1
+  PIPELINE_DEPTH_CAMERAS=all     comma list for depth cameras, or all
   Recording frequency is fixed at 30 Hz.
 EOF
 }
@@ -103,6 +107,18 @@ kill_matches() {
         [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && continue
         terminate_pid_tree "$pid" "$label"
     done
+}
+
+has_option() {
+    local option="$1"
+    shift
+    local arg
+    for arg in "$@"; do
+        if [[ "$arg" == "$option" || "$arg" == "$option="* ]]; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 cleanup_stale_pipeline_processes() {
@@ -308,15 +324,31 @@ start_background_script() {
 }
 
 run_recording() {
+    local record_args=("$@")
+
+    if [[ "${PIPELINE_ENABLE_DEPTH:-0}" != "0" ]]; then
+        if ! has_option "--enable-depth" "${record_args[@]}" && ! has_option "--no-depth" "${record_args[@]}"; then
+            record_args+=("--enable-depth")
+        fi
+        if ! has_option "--depth-cameras" "${record_args[@]}"; then
+            record_args+=("--depth-cameras" "${PIPELINE_DEPTH_CAMERAS:-all}")
+        fi
+    fi
+
     log "Starting 6_record_fr3.sh in the foreground workflow."
     log "Use RGB window controls: s=start, w=pause, e=save, d=discard, k=keyframe, q=save+quit."
+    if has_option "--enable-depth" "${record_args[@]}" && ! has_option "--no-depth" "${record_args[@]}"; then
+        log "Aligned depth recording is enabled. Depth cameras: ${PIPELINE_DEPTH_CAMERAS:-all}"
+    else
+        log "Aligned depth recording is disabled."
+    fi
     log "When script 6 exits, scripts 1-4 will be stopped."
 
     set +e
     (
         cd "$REPO_ROOT"
         export PYTHONUNBUFFERED=1
-        bash "$REPO_ROOT/6_record_fr3.sh" "$@"
+        bash "$REPO_ROOT/6_record_fr3.sh" "${record_args[@]}"
     )
     local rc="$?"
     set -e

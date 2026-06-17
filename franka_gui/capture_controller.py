@@ -7,6 +7,7 @@ import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -34,6 +35,7 @@ MAX_GRIPPER_WIDTH = 0.09
 GRIPPER_BINARY_THRESHOLD = 0.5
 GRIPPER_BINARY_SEMANTICS = "binary_closedness_command"
 FIXED_CAPTURE_FPS = 30
+GUI_CAMERA_READ_TIMEOUT_MS = 3000
 
 
 @dataclass
@@ -56,7 +58,7 @@ class CaptureOptions:
     def __post_init__(self) -> None:
         self.camera_fps = FIXED_CAPTURE_FPS
         self.video_fps = FIXED_CAPTURE_FPS
-        if self.mode not in {"single", "dual"}:
+        if self.mode not in {"single", "right", "dual"}:
             raise ValueError(f"Unsupported capture mode: {self.mode}")
         if self.camera_names is not None:
             self.camera_names = [name for name in self.camera_names if name]
@@ -114,45 +116,75 @@ class CaptureThread(QtCore.QThread):
     def run(self) -> None:
         cameras = {}
         try:
+            requested_camera_names = _selected_camera_names(self.options)
             if self.options.mock:
-                cameras = create_mock_cameras(_selected_camera_names(self.options), self.options.camera_fps)
+                cameras = create_mock_cameras(requested_camera_names, self.options.camera_fps)
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
             else:
                 cameras = create_realsense_cameras(
-                    _fixed_fps_camera_configs(self.options.camera_names)
+                    _fixed_fps_camera_configs(self.options.camera_names),
+                    allow_missing=True,
                 )
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
 
             camera_names = list(cameras.keys())
+            missing_camera_names = [
+                name for name in requested_camera_names if name not in camera_names
+            ]
             self.cameras_ready.emit(camera_names)
-            self.status_changed.emit("相机预览已启动")
+            if not camera_names:
+                self.status_changed.emit("没有检测到可用 RealSense；相机预览为空，仍可录制机器人状态")
+            elif missing_camera_names:
+                self.status_changed.emit(f"相机预览已启动；已跳过缺失相机: {missing_camera_names}")
+            else:
+                self.status_changed.emit("相机预览已启动")
 
             while not self._stop_requested:
+                loop_started = time.monotonic()
                 self._drain_commands(camera_names, camera_metadata)
                 rgb_frames = {}
-                for name, camera in cameras.items():
-                    rgb, _ = camera.read()
+                unavailable_camera_names = []
+                for name, camera in list(cameras.items()):
+                    try:
+                        rgb, _ = camera.read()
+                    except Exception as exc:
+                        unavailable_camera_names.append(name)
+                        self.status_changed.emit(f"相机 {name} 3 秒内无画面，已跳过")
+                        try:
+                            camera.close()
+                        except Exception:
+                            pass
+                        continue
                     rgb_frames[name] = rgb
+                if unavailable_camera_names:
+                    for name in unavailable_camera_names:
+                        cameras.pop(name, None)
+                        camera_metadata.pop(name, None)
+                    camera_names = [name for name in camera_names if name in cameras]
+                    if self._active is not None:
+                        self._active.camera_names = [
+                            name for name in self._active.camera_names if name in cameras
+                        ]
+                    self.cameras_ready.emit(camera_names)
 
                 self.preview_frame.emit(rgb_frames)
                 self._drain_commands(camera_names, camera_metadata)
 
-                if not self._recording or self._active is None:
-                    continue
-
-                try:
-                    frame = self._build_record_frame(rgb_frames)
-                except Exception as exc:
-                    self._recording = False
-                    self.error.emit(f"读取机器人状态失败，已暂停当前 episode: {exc}")
-                    continue
-
-                self._active.frames.append(frame)
-                self.recording_frame_count.emit(
-                    self._active.task,
-                    self._active.index,
-                    len(self._active.frames),
-                )
+                if self._recording and self._active is not None:
+                    try:
+                        frame = self._build_record_frame(rgb_frames)
+                    except Exception as exc:
+                        self._recording = False
+                        self.error.emit(f"读取机器人状态失败，已暂停当前 episode: {exc}")
+                    else:
+                        self._active.frames.append(frame)
+                        self.recording_frame_count.emit(
+                            self._active.task,
+                            self._active.index,
+                            len(self._active.frames),
+                        )
+                if not cameras:
+                    _sleep_to_capture_rate(loop_started, self.options.camera_fps)
         except Exception as exc:
             self.error.emit(str(exc))
         finally:
@@ -285,7 +317,8 @@ class CaptureThread(QtCore.QThread):
                 "host": self.options.robot_host,
                 "port": self.options.robot_port,
                 "timeout_ms": self.options.robot_timeout_ms,
-            }
+            },
+            "arm_side": "right" if self.options.mode == "right" else "left",
         }
 
     def _discard(self) -> None:
@@ -646,16 +679,25 @@ def _selected_camera_names(options: CaptureOptions) -> List[str]:
 
 
 def _fixed_fps_camera_configs(camera_names: Optional[Sequence[str]] = None):
-    from dataclasses import replace
-
     names = list(camera_names) if camera_names else list(DEFAULT_CAMERAS.keys())
     missing = [name for name in names if name not in DEFAULT_CAMERAS]
     if missing:
         raise KeyError(f"Unknown configured camera name(s): {missing}")
     return {
-        name: replace(DEFAULT_CAMERAS[name], fps=FIXED_CAPTURE_FPS)
+        name: replace(
+            DEFAULT_CAMERAS[name],
+            fps=FIXED_CAPTURE_FPS,
+            read_timeout_ms=GUI_CAMERA_READ_TIMEOUT_MS,
+        )
         for name in names
     }
+
+
+def _sleep_to_capture_rate(loop_started: float, fps: int) -> None:
+    interval = 1.0 / max(int(fps), 1)
+    remaining = interval - (time.monotonic() - loop_started)
+    if remaining > 0:
+        time.sleep(remaining)
 
 
 def _connect_checked_robot(host: str, port: int, timeout_ms: int, label: str):

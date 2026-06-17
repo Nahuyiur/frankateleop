@@ -1,18 +1,9 @@
 #!/bin/bash
 set -e
 
-echo ">>> 激活 conda 环境 polymetis ..."
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate polymetis || { echo "❌ 激活失败"; exit 1; }
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
 
-POLY_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)/polymetis"
-
-WORK_DIR="$POLY_ROOT/polymetis/python/polymetis"
-if [[ ! -d "$WORK_DIR/conf" ]]; then
-    echo "❌ 配置目录 $WORK_DIR/conf 不存在"
-    exit 1
-fi
-
-echo ">>> 启动 Franka 客户端 ..."
-cd "$WORK_DIR"
-python ../scripts/launch_gripper.py gripper=franka_hand  #1. franka_hand 2.none
+# Keep the single-left-arm launcher on the same Robotiq path as
+# left_franka/2_launch_gripper.sh; only the gripper server port differs.
+export LEFT_GRIPPER_SERVER_PORT="${LEFT_GRIPPER_SERVER_PORT:-50052}"
+exec bash "$REPO_ROOT/left_franka/2_launch_gripper.sh" "$@"

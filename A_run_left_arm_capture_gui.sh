@@ -25,30 +25,22 @@ if [[ -z "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" && -f "$DEFAULT_SUDO_PASSWORD_FILE
     export FRANKA_GUI_SUDO_PASSWORD_FILE="$DEFAULT_SUDO_PASSWORD_FILE"
 fi
 
-export BI_ARM_RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
-export BI_ARM_RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
-export BI_ARM_SSH_PASSWORD="${BI_ARM_SSH_PASSWORD:-}"
-export BI_ARM_LOCAL_SUDO_PASSWORD="${BI_ARM_LOCAL_SUDO_PASSWORD:-}"
-export BI_ARM_REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
-export BI_ARM_STACK_ONLY=1
-
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<EOF
 用法:
-  bash B_run_bi_arm_capture_gui.sh [GUI参数...]
+  bash A_run_left_arm_capture_gui.sh [GUI参数...]
 
 示例:
-  bash B_run_bi_arm_capture_gui.sh
-  bash B_run_bi_arm_capture_gui.sh --mock
+  bash A_run_left_arm_capture_gui.sh
+  bash A_run_left_arm_capture_gui.sh --mock
 
-双臂 GUI 使用全部配置相机:
-  left_wrist,left,middle,right,right_wrist
+A 左臂单臂 GUI 会优先尝试打开相机:
+  left_wrist,left,middle
+  如果某路相机未连接或被占用，会跳过缺失相机继续启动。
 
 默认:
   固定录制频率=30 Hz
   固定保存根目录=$DEFAULT_OUTPUT_ROOT
-  右机=$BI_ARM_RIGHT_SSH
-  右机仓库=$BI_ARM_RIGHT_REPO
 EOF
     exit 0
 fi
@@ -81,7 +73,7 @@ if [[ "${QT_QPA_PLATFORM:-}" != "offscreen" && "${XDG_SESSION_TYPE:-}" == "x11" 
   sudo apt-get install -y libxcb-cursor0
 
 安装完成后重新启动：
-  bash B_run_bi_arm_capture_gui.sh
+  bash A_run_left_arm_capture_gui.sh
 EOF
         exit 1
     fi
@@ -90,12 +82,13 @@ fi
 echo ">>> 使用仓库根目录 franka_gui ..."
 echo ">>> 默认保存根目录: $DEFAULT_OUTPUT_ROOT"
 echo ">>> 固定录制频率: 30 Hz"
-echo ">>> 双臂相机: 全部配置相机"
-echo ">>> 右机: $BI_ARM_RIGHT_SSH"
-echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
+echo ">>> A 左臂单臂相机: 优先尝试 left_wrist,left,middle；缺失则跳过"
 if [[ -n "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" ]]; then
     echo ">>> sudo 密码文件: $FRANKA_GUI_SUDO_PASSWORD_FILE"
 fi
 
 cd "$REPO_ROOT"
-python -m franka_gui.app --mode dual "$@"
+python -m franka_gui.app \
+    --mode single \
+    --camera-names left_wrist,left,middle \
+    "$@"

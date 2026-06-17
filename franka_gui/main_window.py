@@ -26,13 +26,13 @@ class CameraView(QtWidgets.QFrame):
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
         layout = QtWidgets.QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
         self.title = QtWidgets.QLabel(name)
         self.title.setObjectName("CameraTitle")
         self.label = QtWidgets.QLabel("等待画面")
         self.label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.label.setMinimumSize(240, 180)
+        self.label.setMinimumSize(280, 210)
         self.label.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
@@ -91,13 +91,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fixed_output_root = str(Path.home() / "Desktop" / "franka_record_data")
         self.controller.options.output_root = self._fixed_output_root
 
-        self.setWindowTitle(
-            "Franka Dual-Arm Capture"
-            if self.controller.options.mode == "dual"
-            else "Franka Single-Arm Capture"
-        )
+        window_titles = {
+            "single": "Franka Single-Arm Capture",
+            "right": "Franka Right-Arm Capture",
+            "dual": "Franka Dual-Arm Capture",
+        }
+        self.setWindowTitle(window_titles[self.controller.options.mode])
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        self.resize(1380, 840)
+        self.resize(1760, 960)
+        self.setMinimumSize(1280, 760)
         self._build_ui()
         self._connect_signals()
         self._refresh_tasks()
@@ -195,8 +197,8 @@ class MainWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         root = QtWidgets.QHBoxLayout(central)
-        root.setContentsMargins(12, 12, 12, 12)
-        root.setSpacing(12)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
 
         self.left_panel = self._build_left_panel()
         self.center_panel = self._build_center_panel()
@@ -336,16 +338,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_left_panel(self) -> QtWidgets.QFrame:
         panel = QtWidgets.QFrame()
         panel.setObjectName("LeftPanel")
-        panel.setFixedWidth(210)
+        panel.setFixedWidth(188)
         layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
 
-        app_title = QtWidgets.QLabel(
-            "FR3 Dual Capture"
-            if self.controller.options.mode == "dual"
-            else "FR3 Single Capture"
-        )
+        app_titles = {
+            "single": "FR3 Single Capture",
+            "right": "FR3 Right Capture",
+            "dual": "FR3 Dual Capture",
+        }
+        app_title = QtWidgets.QLabel(app_titles[self.controller.options.mode])
         app_title.setObjectName("AppTitle")
         layout.addWidget(app_title)
         layout.addWidget(AccentBar("Blue"))
@@ -354,11 +357,12 @@ class MainWindow(QtWidgets.QMainWindow):
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
 
-        self.start_stack_btn = QtWidgets.QPushButton(
-            "启动双臂 1-4"
-            if self.process_manager.mode == "dual"
-            else "启动 1-4"
-        )
+        start_labels = {
+            "single": "启动 1-4",
+            "right": "启动右臂 1-4",
+            "dual": "启动双臂 1-4",
+        }
+        self.start_stack_btn = QtWidgets.QPushButton(start_labels[self.process_manager.mode])
         self.start_stack_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
         self.stop_stack_btn = QtWidgets.QPushButton("停止全部")
         self.stop_stack_btn.setObjectName("Danger")
@@ -375,7 +379,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.preview_btn)
         layout.addWidget(self.log_btn)
 
-        layout.addSpacing(10)
+        layout.addSpacing(6)
         capture_title = QtWidgets.QLabel("数据采集")
         capture_title.setObjectName("SectionTitle")
         layout.addWidget(capture_title)
@@ -395,7 +399,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.discard_btn)
         layout.addWidget(self.keyframe_btn)
 
-        layout.addSpacing(10)
+        layout.addSpacing(6)
         disk_title = QtWidgets.QLabel("磁盘容量")
         disk_title.setObjectName("SectionTitle")
         layout.addWidget(disk_title)
@@ -409,10 +413,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_center_panel(self) -> QtWidgets.QFrame:
         panel = QtWidgets.QFrame()
         panel.setObjectName("CenterPanel")
-        panel.setFixedWidth(440)
+        panel.setFixedWidth(340)
         layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
 
         title = QtWidgets.QLabel("任务总览")
         title.setObjectName("SectionTitle")
@@ -432,7 +436,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_path_label = QtWidgets.QLabel("")
         self.next_path_label.setObjectName("OutputRoot")
         self.next_path_label.setWordWrap(True)
-        self.next_path_label.setMinimumHeight(52)
+        self.next_path_label.setMinimumHeight(44)
         self.next_path_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -457,7 +461,7 @@ class MainWindow(QtWidgets.QMainWindow):
         metadata_title.setObjectName("SectionTitle")
         self.metadata_edit = QtWidgets.QPlainTextEdit()
         self.metadata_edit.setPlaceholderText('普通备注，或 JSON 对象，例如 {"operator": "pnp"}')
-        self.metadata_edit.setMaximumHeight(82)
+        self.metadata_edit.setMaximumHeight(64)
         layout.addWidget(metadata_title)
         layout.addWidget(self.metadata_edit)
 
@@ -477,10 +481,10 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             layout.addWidget(label)
 
-        layout.addSpacing(16)
+        layout.addSpacing(8)
         self.status_box = QtWidgets.QLabel("READY")
         self.status_box.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.status_box.setMinimumHeight(96)
+        self.status_box.setMinimumHeight(72)
         self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
         layout.addWidget(self.status_box)
 
@@ -496,7 +500,8 @@ class MainWindow(QtWidgets.QMainWindow):
         panel = QtWidgets.QFrame()
         panel.setObjectName("CameraPanel")
         layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
         title = QtWidgets.QLabel("相机视角")
         title.setObjectName("SectionTitle")
         layout.addWidget(title)
@@ -504,9 +509,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_grid_widget = QtWidgets.QWidget()
         self.camera_grid = QtWidgets.QGridLayout(self.camera_grid_widget)
         self.camera_grid.setContentsMargins(0, 0, 0, 0)
-        self.camera_grid.setSpacing(10)
-        self.camera_grid.setColumnStretch(0, 1)
-        self.camera_grid.setColumnStretch(1, 1)
+        self.camera_grid.setSpacing(8)
+        for col in range(6):
+            self.camera_grid.setColumnStretch(col, 1)
         self.camera_grid.setRowStretch(0, 1)
         self.camera_grid.setRowStretch(1, 1)
         self.camera_grid_widget.setSizePolicy(
@@ -566,6 +571,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.start_preview()
 
     def _setup_camera_views(self, names) -> None:
+        names = list(names)
         for view in self.camera_views.values():
             view.setParent(None)
         while self.camera_grid.count():
@@ -573,27 +579,53 @@ class MainWindow(QtWidgets.QMainWindow):
             if item.widget() is not None:
                 item.widget().setParent(None)
         self.camera_views.clear()
+        if not names:
+            placeholder = QtWidgets.QLabel("没有检测到可用 RealSense 相机\n仍可录制机器人状态")
+            placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+            placeholder.setMinimumSize(520, 320)
+            placeholder.setStyleSheet(
+                "background: #050505; color: #d1d5db; border-radius: 8px; font-size: 20px;"
+            )
+            self.camera_grid.addWidget(placeholder, 0, 0, 2, 6)
+            self.camera_grid.setRowStretch(0, 1)
+            self.camera_grid.setRowStretch(1, 1)
+            self.capture_state.setText("采集状态: 未检测到相机")
+            return
         for name in names:
             view = CameraView(name)
             self.camera_views[name] = view
         self._place_camera_views(names)
-        self.capture_state.setText(f"采集状态: 相机已连接 {list(names)}")
+        self.capture_state.setText(f"采集状态: 相机已连接 {names}")
 
     def _place_camera_views(self, names) -> None:
-        for col in range(2):
+        for col in range(6):
             self.camera_grid.setColumnStretch(col, 1)
         for row in range(8):
             self.camera_grid.setRowStretch(row, 0)
 
-        preferred_positions = {
-            "left_wrist": (0, 0, 1, 1),
-            "left": (0, 1, 1, 1),
-            "middle": (1, 0, 1, 2),
-            "right": (2, 0, 1, 1),
-            "right_wrist": (2, 1, 1, 1),
-        }
+        if self.controller.options.mode == "dual":
+            preferred_positions = {
+                "left": (0, 0, 1, 3),
+                "right": (0, 3, 1, 3),
+                "left_wrist": (1, 0, 1, 2),
+                "middle": (1, 2, 1, 2),
+                "right_wrist": (1, 4, 1, 2),
+            }
+        elif self.controller.options.mode == "right":
+            preferred_positions = {
+                "middle": (0, 0, 1, 3),
+                "right": (0, 3, 1, 3),
+                "right_wrist": (1, 0, 1, 6),
+            }
+        else:
+            preferred_positions = {
+                "left": (0, 0, 1, 3),
+                "middle": (0, 3, 1, 3),
+                "left_wrist": (1, 0, 1, 6),
+            }
+
         placed = set()
-        for name in ("left_wrist", "left", "middle", "right", "right_wrist"):
+        for name in preferred_positions:
             view = self.camera_views.get(name)
             if view is None:
                 continue
@@ -605,8 +637,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for idx, name in enumerate(extra_names):
             view = self.camera_views[name]
             row = 2 + idx // 2
-            col = idx % 2
-            self.camera_grid.addWidget(view, row, col)
+            col = 0 if idx % 2 == 0 else 3
+            self.camera_grid.addWidget(view, row, col, 1, 3)
             self.camera_grid.setRowStretch(row, 1)
 
     def _update_preview(self, frames: Dict[str, np.ndarray]) -> None:
