@@ -37,6 +37,7 @@ export BI_ARM_LOCAL_SUDO_PASSWORD="${BI_ARM_LOCAL_SUDO_PASSWORD:-}"
 export BI_ARM_REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
 export BI_ARM_STACK_ONLY=1
 export BI_ARM_RIGHT_ONLY=1
+export BI_ARM_START_RUN_ENV="${BI_ARM_START_RUN_ENV:-0}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<EOF
@@ -63,6 +64,7 @@ B 右臂单臂 GUI 会优先尝试打开相机:
   右臂直连 ZMQ=$FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT
   回滚到隧道: FRANKA_RIGHT_ZMQ_HOST=127.0.0.1 FRANKA_RIGHT_ZMQ_PORT=$BI_ARM_RIGHT_LOCAL_ZMQ_PORT
   右臂本地 ZMQ 隧道端口=$BI_ARM_RIGHT_LOCAL_ZMQ_PORT
+  GUI stack 默认不启动 teleop 4_run_env；如需同时启动，设置 BI_ARM_START_RUN_ENV=1
   右臂 Robotiq 串口=自动检测；如需固定，设置 BI_ARM_RIGHT_ROBOTIQ_COMPORT
 EOF
     exit 0
@@ -108,6 +110,7 @@ echo ">>> 固定录制频率: 30 Hz"
 echo ">>> B 右臂单臂相机: 优先尝试 middle,right,right_wrist；缺失则跳过"
 echo ">>> 右臂直连 ZMQ: $FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT"
 echo ">>> 右臂本地 ZMQ 隧道端口(回滚用): $BI_ARM_RIGHT_LOCAL_ZMQ_PORT"
+echo ">>> GUI stack teleop 4_run_env: $BI_ARM_START_RUN_ENV"
 echo ">>> 右机: $BI_ARM_RIGHT_SSH"
 echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
 if [[ -n "${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-}" ]]; then

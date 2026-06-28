@@ -29,6 +29,14 @@ REMOTE_LOG_DIR="${BI_ARM_REMOTE_LOG_DIR:-$RIGHT_REPO/logs/bi_arm_pipeline/$RUN_I
 SYNC_REMOTE_RIGHT_SCRIPTS="${BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS:-1}"
 STACK_ONLY="${BI_ARM_STACK_ONLY:-0}"
 RIGHT_ONLY="${BI_ARM_RIGHT_ONLY:-0}"
+START_RUN_ENV="${BI_ARM_START_RUN_ENV:-}"
+if [[ -z "$START_RUN_ENV" ]]; then
+    if [[ "$STACK_ONLY" == "1" ]]; then
+        START_RUN_ENV=0
+    else
+        START_RUN_ENV=1
+    fi
+fi
 
 LOCAL_PIDS=()
 LOCAL_NAMES=()
@@ -69,6 +77,7 @@ Environment:
   BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS=1
   BI_ARM_STACK_ONLY=0
   BI_ARM_RIGHT_ONLY=0
+  BI_ARM_START_RUN_ENV=auto
   BI_ARM_SSH_PASSWORD=
   BI_ARM_LOCAL_SUDO_PASSWORD=
   BI_ARM_REMOTE_SUDO_PASSWORD=
@@ -81,8 +90,9 @@ Environment:
 This script starts local left_franka/1-4, starts remote right_franka/1-4
 through SSH, opens an SSH tunnel from local 16001 to remote 6001, then runs
 the dual-arm recorder on this host. With BI_ARM_RIGHT_ONLY=1 and
-BI_ARM_STACK_ONLY=1, it starts only the remote right_franka/1-4 stack plus the
-right-arm SSH tunnel for the GUI right-arm single recorder.
+BI_ARM_STACK_ONLY=1, it starts only the remote right_franka/1-3 stack plus the
+right-arm SSH tunnel for the GUI right-arm single recorder. Set
+BI_ARM_START_RUN_ENV=1 if the GUI stack should also start teleop 4_run_env.
 EOF
 }
 
@@ -897,9 +907,13 @@ main() {
     log "Move to initial joint pose: $MOVE_TO_INITIAL_POSE"
     log "Stack-only mode: $STACK_ONLY"
     log "Right-only mode: $RIGHT_ONLY"
+    log "Start teleop run_env: $START_RUN_ENV"
 
     if [[ "$RIGHT_ONLY" == "1" && "$STACK_ONLY" != "1" ]]; then
         abort "BI_ARM_RIGHT_ONLY=1 is only supported together with BI_ARM_STACK_ONLY=1 for GUI use."
+    fi
+    if [[ "$START_RUN_ENV" != "0" && "$START_RUN_ENV" != "1" ]]; then
+        abort "BI_ARM_START_RUN_ENV must be 0 or 1, got: $START_RUN_ENV"
     fi
 
     setup_ssh_askpass
@@ -932,15 +946,19 @@ main() {
     kill_port_local "right ZMQ tunnel" "$RIGHT_LOCAL_ZMQ_PORT"
     start_tunnel
 
-    if [[ "$RIGHT_ONLY" != "1" ]]; then
-        check_local_script "left 4_run_env alignment" "$REPO_ROOT/left_franka/4_run_env.sh" --check-only
-    fi
-    check_remote_script "right 4_run_env alignment" "4_run_env.sh" --check-only
+    if [[ "$START_RUN_ENV" == "1" ]]; then
+        if [[ "$RIGHT_ONLY" != "1" ]]; then
+            check_local_script "left 4_run_env alignment" "$REPO_ROOT/left_franka/4_run_env.sh" --check-only
+        fi
+        check_remote_script "right 4_run_env alignment" "4_run_env.sh" --check-only
 
-    if [[ "$RIGHT_ONLY" != "1" ]]; then
-        start_local_script "left 4_run_env" "$REPO_ROOT/left_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/left_4_run_env.log"
+        if [[ "$RIGHT_ONLY" != "1" ]]; then
+            start_local_script "left 4_run_env" "$REPO_ROOT/left_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/left_4_run_env.log"
+        fi
+        start_remote_script "right 4_run_env" "4_run_env.sh" check_env_loop_ready_remote "$REMOTE_LOG_DIR/right_4_run_env.log"
+    else
+        log "Skipping teleop 4_run_env for stack-only GUI mode."
     fi
-    start_remote_script "right 4_run_env" "4_run_env.sh" check_env_loop_ready_remote "$REMOTE_LOG_DIR/right_4_run_env.log"
 
     if [[ "$STACK_ONLY" == "1" ]]; then
         wait_for_external_recorder

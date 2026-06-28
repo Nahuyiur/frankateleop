@@ -39,29 +39,46 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
 fi
 
 resolve_teleop_port() {
-    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0"
+    local default_ports=(
+        "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0"
+        "/dev/serial/by-id/usb-FTDI_USB_TO_RS-485_DAAQM7QD-if00-port0"
+    )
     local teleop_port="${RIGHT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}"
 
-    if [[ -z "$teleop_port" && -e "$default_port" ]]; then
-        teleop_port="$default_port"
+    if [[ -z "$teleop_port" ]]; then
+        local default_port
+        for default_port in "${default_ports[@]}"; do
+            if [[ -e "$default_port" ]]; then
+                teleop_port="$default_port"
+                break
+            fi
+        done
     fi
 
     if [[ -z "$teleop_port" ]]; then
         local ftdi_ports=()
         if [[ -d /dev/serial/by-id ]]; then
-            mapfile -t ftdi_ports < <(find /dev/serial/by-id -maxdepth 1 -type l -name 'usb-FTDI_USB__-__Serial_Converter_*' | sort)
+            mapfile -t ftdi_ports < <(
+                find /dev/serial/by-id -maxdepth 1 -type l \
+                    \( -name 'usb-FTDI_USB__-__Serial_Converter_*' -o -name 'usb-FTDI_USB_TO_RS-485_*' \) \
+                    | sort
+            )
         fi
         if [[ "${#ftdi_ports[@]}" -eq 1 ]]; then
             teleop_port="${ftdi_ports[0]}"
         else
-            echo "❌ 未指定 RIGHT_TELEOP_PORT/FRANKA_TELEOP_PORT，且找到 ${#ftdi_ports[@]} 个 FTDI 串口"
-            printf '  %s\n' "${ftdi_ports[@]}"
+            echo "❌ 未指定 RIGHT_TELEOP_PORT/FRANKA_TELEOP_PORT，且找到 ${#ftdi_ports[@]} 个可用 FTDI 串口" >&2
+            printf '  %s\n' "${ftdi_ports[@]}" >&2
+            if [[ -d /dev/serial/by-id ]]; then
+                echo ">>> 当前 /dev/serial/by-id:" >&2
+                find /dev/serial/by-id -maxdepth 1 -type l -printf '  %p -> %l\n' 2>/dev/null | sort >&2 || true
+            fi
             exit 1
         fi
     fi
 
     if [[ ! -e "$teleop_port" ]]; then
-        echo "❌ 串口不存在：$teleop_port"
+        echo "❌ 串口不存在：$teleop_port" >&2
         exit 1
     fi
 
