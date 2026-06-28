@@ -399,11 +399,10 @@ kill_local_right_teleop_holder() {
                 printf '\n'
             fi
             ps -eo pid=,cmd= | awk -v port="$teleop_port" -v zmq_port="$cmd_filter_port" '
-                /teleop\/experiments\/run_env.py/ && (
-                    (port != "" && (index($0, "--teleop_port=" port) || index($0, "--teleop_port " port))) ||
-                    index($0, "--tele_port=" zmq_port) ||
-                    index($0, "--tele_port " zmq_port)
-                ) {print $1}
+                /teleop\/experiments\/run_env.py/ {
+                    if (port != "" && (index($0, "--teleop_port=" port) || index($0, "--teleop_port " port))) print $1
+                    else if (index($0, "--tele_port=" zmq_port) || index($0, "--tele_port " zmq_port)) print $1
+                }
                 /right_franka\/4_run_env.sh/ {print $1}
             '
         } | awk '/^[0-9]+$/ && !seen[$0]++'

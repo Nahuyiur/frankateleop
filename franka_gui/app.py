@@ -82,7 +82,12 @@ def main() -> int:
     }
     app.setApplicationName(app_names[args.mode])
     controller = CaptureController(options)
-    process_manager = ProcessManager(repo_root, mode=args.mode)
+    process_manager = ProcessManager(
+        repo_root,
+        mode=args.mode,
+        right_robot_host=args.right_host,
+        right_robot_port=args.right_port,
+    )
     window = MainWindow(controller, process_manager, repo_root)
     window.show()
     return app.exec()
