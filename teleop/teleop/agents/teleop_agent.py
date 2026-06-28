@@ -109,7 +109,6 @@ class TeleopAgent(Agent):
     def __init__(
         self,
         port: str,
-        config_port: Optional[str] = None,
         dynamixel_config: Optional[DynamixelRobotConfig] = None,
         start_joints: Optional[np.ndarray] = None,
     ):
@@ -119,12 +118,9 @@ class TeleopAgent(Agent):
             )
         else:
             assert os.path.exists(port), port
-            config_key = config_port or port
-            assert config_key in PORT_CONFIG_MAP, (
-                f"Config port {config_key} not in config map for actual port {port}"
-            )
+            assert port in PORT_CONFIG_MAP, f"Port {port} not in config map"
 
-            config = PORT_CONFIG_MAP[config_key]
+            config = PORT_CONFIG_MAP[port]
             self._robot = config.make_robot(port=port, start_joints=start_joints)
 
     def act(self, obs: Dict[str, np.ndarray]) -> np.ndarray:
