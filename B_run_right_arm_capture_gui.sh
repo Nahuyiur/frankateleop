@@ -72,7 +72,7 @@ B 右臂单臂 GUI 会优先尝试打开相机:
   GUI stack 默认启动本地 teleop 4_run_env；如只看相机不控制，设置 BI_ARM_CAMERA_ONLY=1
   右臂 teleop ZMQ=$FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT
   右臂 Robotiq 串口=自动检测；如需固定，设置 BI_ARM_RIGHT_ROBOTIQ_COMPORT
-  右臂同构臂串口=自动检测本机 FTDI Serial Converter；如需固定，设置 BI_ARM_RIGHT_TELEOP_PORT
+  右臂同构臂串口=只自动检测右臂默认 FTDI；如需固定，设置 BI_ARM_RIGHT_TELEOP_PORT
 EOF
     exit 0
 fi
@@ -125,7 +125,7 @@ echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
 if [[ -n "${BI_ARM_RIGHT_TELEOP_PORT:-}" ]]; then
     echo ">>> 右臂同构臂串口: $BI_ARM_RIGHT_TELEOP_PORT"
 else
-    echo ">>> 右臂同构臂串口: 自动检测本机唯一 FTDI Serial Converter"
+    echo ">>> 右臂同构臂串口: 自动检测右臂默认 FTDI；不会自动 fallback 到左臂串口"
 fi
 if [[ -n "${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-}" ]]; then
     echo ">>> 右臂 Robotiq 串口: $BI_ARM_RIGHT_ROBOTIQ_COMPORT"

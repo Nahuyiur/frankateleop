@@ -41,9 +41,10 @@ fi
 resolve_teleop_port() {
     local default_ports=(
         "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0"
-        "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJTKP2-if00-port0"
+        "/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTAUMOPA-if00-port0"
     )
     local teleop_port="${RIGHT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}"
+    local explicit_port="$teleop_port"
 
     if [[ -z "$teleop_port" ]]; then
         local default_port
@@ -56,27 +57,35 @@ resolve_teleop_port() {
     fi
 
     if [[ -z "$teleop_port" ]]; then
+        echo "❌ 未找到右臂同构臂默认串口，拒绝自动选择其他 FTDI 设备。" >&2
+        echo ">>> 右臂默认候选:" >&2
+        printf '  %s\n' "${default_ports[@]}" >&2
         local ftdi_ports=()
         if [[ -d /dev/serial/by-id ]]; then
             mapfile -t ftdi_ports < <(
                 find /dev/serial/by-id -maxdepth 1 -type l -name 'usb-FTDI_USB__-__Serial_Converter_*' | sort
             )
         fi
-        if [[ "${#ftdi_ports[@]}" -eq 1 ]]; then
-            teleop_port="${ftdi_ports[0]}"
-        else
-            echo "❌ 未指定 RIGHT_TELEOP_PORT/FRANKA_TELEOP_PORT，且找到 ${#ftdi_ports[@]} 个同构臂 FTDI 串口" >&2
+        if [[ "${#ftdi_ports[@]}" -gt 0 ]]; then
+            echo ">>> 当前检测到的同构臂 FTDI 串口:" >&2
             printf '  %s\n' "${ftdi_ports[@]}" >&2
-            if [[ -d /dev/serial/by-id ]]; then
-                echo ">>> 当前 /dev/serial/by-id:" >&2
-                find /dev/serial/by-id -maxdepth 1 -type l -printf '  %p -> %l\n' 2>/dev/null | sort >&2 || true
-            fi
-            exit 1
         fi
+        if [[ -d /dev/serial/by-id ]]; then
+            echo ">>> 当前 /dev/serial/by-id:" >&2
+            find /dev/serial/by-id -maxdepth 1 -type l -printf '  %p -> %l\n' 2>/dev/null | sort >&2 || true
+        fi
+        echo ">>> 如果硬件接线确实变化，请显式设置 BI_ARM_RIGHT_TELEOP_PORT 或 RIGHT_TELEOP_PORT。" >&2
+        exit 1
     fi
 
     if [[ ! -e "$teleop_port" ]]; then
         echo "❌ 串口不存在：$teleop_port" >&2
+        exit 1
+    fi
+
+    if [[ "$teleop_port" == *"FTBJTKP2"* && -z "$explicit_port" ]]; then
+        echo "❌ 右臂自动检测拒绝使用 FTBJTKP2；该串口在源码中属于 left fr3。" >&2
+        echo ">>> 请连接右臂同构臂默认串口，或显式设置 BI_ARM_RIGHT_TELEOP_PORT/RIGHT_TELEOP_PORT。" >&2
         exit 1
     fi
 
@@ -92,9 +101,8 @@ export TELEOP_DEBUG_INTERVAL_SEC="${TELEOP_DEBUG_INTERVAL_SEC:-1.0}"
 echo ">>> 启动同构臂 teleop 客户端 ..."
 echo ">>> 使用同构臂串口：$TELEOP_PORT_RESOLVED"
 echo ">>> 使用 robot ZMQ：$TELEOP_ZMQ_HOST:$TELEOP_ZMQ_PORT"
-if [[ "$TELEOP_PORT_RESOLVED" == *"FTBJTKP2"* && -z "${RIGHT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}" ]]; then
-    echo ">>> 注意：自动选择了 FTBJTKP2；源码里该串口原先标注为 left fr3。"
-    echo ">>> 如果移动同构臂后 TELEOP_DEBUG_ACTION 的 action[:7] 不变化，请显式设置 RIGHT_TELEOP_PORT。"
+if [[ "$TELEOP_PORT_RESOLVED" == *"FTBJTKP2"* ]]; then
+    echo ">>> 注意：正在按显式配置使用 FTBJTKP2；源码里该串口原先标注为 left fr3。"
 fi
 python3 "$SCRIPT_PATH" --agent=teleop --hostname="$TELEOP_ZMQ_HOST" --tele_port="$TELEOP_ZMQ_PORT" --teleop_port="$TELEOP_PORT_RESOLVED" "$@"
 #如果要启用采集数据，需要在后面增加“--use_save_interface”
