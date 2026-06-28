@@ -86,9 +86,15 @@ resolve_teleop_port() {
 TELEOP_PORT_RESOLVED="$(resolve_teleop_port)"
 TELEOP_ZMQ_HOST="${RIGHT_TELEOP_ZMQ_HOST:-${FRANKA_TELEOP_ZMQ_HOST:-127.0.0.1}}"
 TELEOP_ZMQ_PORT="${RIGHT_TELEOP_ZMQ_PORT:-${FRANKA_TELEOP_ZMQ_PORT:-6001}}"
+export TELEOP_DEBUG_ACTION="${TELEOP_DEBUG_ACTION:-1}"
+export TELEOP_DEBUG_INTERVAL_SEC="${TELEOP_DEBUG_INTERVAL_SEC:-1.0}"
 
 echo ">>> 启动同构臂 teleop 客户端 ..."
 echo ">>> 使用同构臂串口：$TELEOP_PORT_RESOLVED"
 echo ">>> 使用 robot ZMQ：$TELEOP_ZMQ_HOST:$TELEOP_ZMQ_PORT"
+if [[ "$TELEOP_PORT_RESOLVED" == *"FTBJTKP2"* && -z "${RIGHT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}" ]]; then
+    echo ">>> 注意：自动选择了 FTBJTKP2；源码里该串口原先标注为 left fr3。"
+    echo ">>> 如果移动同构臂后 TELEOP_DEBUG_ACTION 的 action[:7] 不变化，请显式设置 RIGHT_TELEOP_PORT。"
+fi
 python3 "$SCRIPT_PATH" --agent=teleop --hostname="$TELEOP_ZMQ_HOST" --tele_port="$TELEOP_ZMQ_PORT" --teleop_port="$TELEOP_PORT_RESOLVED" "$@"
 #如果要启用采集数据，需要在后面增加“--use_save_interface”

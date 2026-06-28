@@ -84,24 +84,26 @@ class ZMQClientRobot(Robot):
         self._socket = self._context.socket(zmq.REQ)
         self._socket.connect(f"tcp://{host}:{port}")
 
+    def _request(self, method: str, args: Dict[str, Any] = None) -> Any:
+        request = {"method": method}
+        if args is not None:
+            request["args"] = args
+        self._socket.send(pickle.dumps(request))
+        result = pickle.loads(self._socket.recv())
+        if isinstance(result, dict) and "error" in result:
+            raise RuntimeError(f"Remote robot {method} failed: {result['error']}")
+        return result
+
     def num_dofs(self) -> int:
         """Get the number of joints in the robot.
 
         Returns:
             int: The number of joints in the robot.
         """
-        request = {"method": "num_dofs"}
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        return self._request("num_dofs")
 
     def get_control_mode(self) -> str:
-        request = {"method": "get_control_mode"}
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        return self._request("get_control_mode")
 
     def get_joint_state(self) -> np.ndarray:
         """Get the current state of the leader robot.
@@ -109,11 +111,7 @@ class ZMQClientRobot(Robot):
         Returns:
             T: The current state of the leader robot.
         """
-        request = {"method": "get_joint_state"}
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        return self._request("get_joint_state")
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:
         """Command the leader robot to the given state.
@@ -121,14 +119,7 @@ class ZMQClientRobot(Robot):
         Args:
             joint_state (T): The state to command the leader robot to.
         """
-        request = {
-            "method": "command_joint_state",
-            "args": {"joint_state": joint_state},
-        }
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        return self._request("command_joint_state", {"joint_state": joint_state})
 
     def command_ee_pose(
         self,
@@ -139,20 +130,16 @@ class ZMQClientRobot(Robot):
         update_gripper: bool = True,
     ) -> None:
         """Command an absolute end-effector pose plus gripper width."""
-        request = {
-            "method": "command_ee_pose",
-            "args": {
+        return self._request(
+            "command_ee_pose",
+            {
                 "pose_6d": pose_6d,
                 "gripper_width": gripper_width,
                 "gripper_speed": gripper_speed,
                 "gripper_force": gripper_force,
                 "update_gripper": update_gripper,
             },
-        }
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        )
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         """Get the current observations of the leader robot.
@@ -160,8 +147,4 @@ class ZMQClientRobot(Robot):
         Returns:
             Dict[str, np.ndarray]: The current observations of the leader robot.
         """
-        request = {"method": "get_observations"}
-        send_message = pickle.dumps(request)
-        self._socket.send(send_message)
-        result = pickle.loads(self._socket.recv())
-        return result
+        return self._request("get_observations")

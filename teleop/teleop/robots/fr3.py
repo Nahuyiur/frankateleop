@@ -146,8 +146,21 @@ class fr3Robot(Robot):
         """
         import torch
 
+        joint_state = np.asarray(joint_state, dtype=float).reshape(-1)
+        if joint_state.size == 7:
+            arm_joints = joint_state
+            has_gripper_command = False
+        elif joint_state.size == 8:
+            arm_joints = joint_state[:7]
+            has_gripper_command = True
+        else:
+            raise ValueError(
+                "FR3 joint command must contain 7 arm joints, or 8 values "
+                f"including the gripper; got shape {joint_state.shape}"
+            )
+
         self._ensure_joint_controller_running()
-        desired_joints = torch.tensor(joint_state[:-1])
+        desired_joints = torch.tensor(arm_joints)
         try:
             self.robot.update_desired_joint_positions(desired_joints)
         except Exception as exc:
@@ -157,7 +170,7 @@ class fr3Robot(Robot):
             self.robot.start_joint_impedance()
             time.sleep(0.1)
             self.robot.update_desired_joint_positions(desired_joints)
-        if update_gripper:
+        if update_gripper and has_gripper_command:
             raw_gripper_action = float(joint_state[-1])
             if not np.isfinite(raw_gripper_action):
                 raise ValueError(f"Invalid gripper action: {raw_gripper_action}")

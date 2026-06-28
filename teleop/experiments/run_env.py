@@ -1,5 +1,6 @@
 import datetime
 import glob
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +34,13 @@ def wrap_arm_action_to_nearest(action, reference):
             (action[:count] - reference[:count] + np.pi) % (2 * np.pi) - np.pi
         )
     return action
+
+
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.lower() in ("1", "true", "yes", "on")
 
 
 @dataclass
@@ -236,6 +244,15 @@ def main(args):
 
     save_path = None
     start_time = time.time()
+    debug_action = env_flag("TELEOP_DEBUG_ACTION")
+    debug_interval = float(os.environ.get("TELEOP_DEBUG_INTERVAL_SEC", "1.0"))
+    debug_next_time = 0.0
+    debug_prev_action = None
+    if debug_action:
+        print(
+            "TELEOP_DEBUG_ACTION enabled "
+            f"(interval={debug_interval:.2f}s)"
+        )
     while True:
         num = time.time() - start_time
         message = f"\rTime passed: {round(num, 2)}          "
@@ -247,6 +264,28 @@ def main(args):
             flush=True,
         )
         action = wrap_arm_action_to_nearest(agent.act(obs), obs["joint_positions"])
+        now = time.time()
+        if debug_action and now >= debug_next_time:
+            current = np.asarray(obs["joint_positions"], dtype=float)
+            action_array = np.asarray(action, dtype=float)
+            delta = action_array - current
+            if debug_prev_action is None:
+                leader_step = 0.0
+            else:
+                leader_step = float(np.max(np.abs(action_array - debug_prev_action)))
+            debug_prev_action = action_array.copy()
+            print()
+            print(
+                "TELEOP_DEBUG_ACTION "
+                f"max_cmd_delta={np.max(np.abs(delta)):.4f} "
+                f"max_leader_step={leader_step:.4f} "
+                "current[:7]="
+                f"{np.array2string(current[:7], precision=3, suppress_small=True)} "
+                "action[:7]="
+                f"{np.array2string(action_array[:7], precision=3, suppress_small=True)}",
+                flush=True,
+            )
+            debug_next_time = now + debug_interval
         dt = datetime.datetime.now()
         if args.use_save_interface:
             state = kb_interface.update()
