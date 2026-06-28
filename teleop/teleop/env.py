@@ -53,9 +53,7 @@ class RobotEnv:
             self._robot.num_dofs()
         ), f"input:{len(joints)}, robot:{self._robot.num_dofs()}"
         assert self._robot.num_dofs() == len(joints)
-        result = self._robot.command_joint_state(joints)
-        if isinstance(result, dict) and "error" in result:
-            raise RuntimeError(f"Robot command failed: {result['error']}")
+        self._robot.command_joint_state(joints)
         self._rate.sleep()
         return self.get_obs()
 

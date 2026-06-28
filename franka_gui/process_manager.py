@@ -32,8 +32,6 @@ class ProcessManager(QtCore.QObject):
         self,
         repo_root: Path,
         mode: str = "single",
-        right_robot_host: str | None = None,
-        right_robot_port: int | None = None,
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -41,8 +39,6 @@ class ProcessManager(QtCore.QObject):
         if mode not in {"single", "right", "dual"}:
             raise ValueError(f"Unsupported process manager mode: {mode}")
         self.mode = mode
-        self.right_robot_host = right_robot_host
-        self.right_robot_port = right_robot_port
         log_roots = {
             "single": "fr3_gui",
             "right": "fr3_gui_right",
@@ -263,25 +259,6 @@ class ProcessManager(QtCore.QObject):
             "BI_ARM_STACK_ONLY": "1",
             "BI_ARM_RIGHT_ONLY": "1",
         }
-        right_host = self.right_robot_host or env.get("FRANKA_RIGHT_ZMQ_HOST", "192.168.1.131")
-        right_port = str(self.right_robot_port or env.get("FRANKA_RIGHT_ZMQ_PORT", "6001"))
-        camera_only = env.get("BI_ARM_CAMERA_ONLY", "0") == "1"
-        env.update(
-            {
-                "FRANKA_RIGHT_ZMQ_HOST": right_host,
-                "FRANKA_RIGHT_ZMQ_PORT": right_port,
-                "BI_ARM_RIGHT_RECORD_ZMQ_HOST": right_host,
-                "BI_ARM_RIGHT_RECORD_ZMQ_PORT": right_port,
-                "BI_ARM_RIGHT_TELEOP_ZMQ_HOST": right_host,
-                "BI_ARM_RIGHT_TELEOP_ZMQ_PORT": right_port,
-                "BI_ARM_CAMERA_ONLY": "1" if camera_only else "0",
-                "BI_ARM_START_RUN_ENV": "0" if camera_only else "1",
-            }
-        )
-        self._emit_log(
-            "右臂 GUI stack endpoint: "
-            f"{right_host}:{right_port}; teleop={'off' if camera_only else 'on'}"
-        )
         gui_password = _read_sudo_password()
         if gui_password:
             for key in (

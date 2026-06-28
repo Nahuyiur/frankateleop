@@ -37,12 +37,6 @@ export BI_ARM_LOCAL_SUDO_PASSWORD="${BI_ARM_LOCAL_SUDO_PASSWORD:-}"
 export BI_ARM_REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
 export BI_ARM_STACK_ONLY=1
 export BI_ARM_RIGHT_ONLY=1
-export BI_ARM_CAMERA_ONLY="${BI_ARM_CAMERA_ONLY:-0}"
-if [[ "$BI_ARM_CAMERA_ONLY" == "1" ]]; then
-    export BI_ARM_START_RUN_ENV=0
-else
-    export BI_ARM_START_RUN_ENV=1
-fi
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<EOF
@@ -69,10 +63,7 @@ B 右臂单臂 GUI 会优先尝试打开相机:
   右臂直连 ZMQ=$FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT
   回滚到隧道: FRANKA_RIGHT_ZMQ_HOST=127.0.0.1 FRANKA_RIGHT_ZMQ_PORT=$BI_ARM_RIGHT_LOCAL_ZMQ_PORT
   右臂本地 ZMQ 隧道端口=$BI_ARM_RIGHT_LOCAL_ZMQ_PORT
-  GUI stack 默认启动本地 teleop 4_run_env；如只看相机不控制，设置 BI_ARM_CAMERA_ONLY=1
-  右臂 teleop ZMQ=$FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT
   右臂 Robotiq 串口=自动检测；如需固定，设置 BI_ARM_RIGHT_ROBOTIQ_COMPORT
-  右臂同构臂串口=只自动检测右臂默认 FTDI；如需固定，设置 BI_ARM_RIGHT_TELEOP_PORT
 EOF
     exit 0
 fi
@@ -117,16 +108,8 @@ echo ">>> 固定录制频率: 30 Hz"
 echo ">>> B 右臂单臂相机: 优先尝试 middle,right,right_wrist；缺失则跳过"
 echo ">>> 右臂直连 ZMQ: $FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT"
 echo ">>> 右臂本地 ZMQ 隧道端口(回滚用): $BI_ARM_RIGHT_LOCAL_ZMQ_PORT"
-echo ">>> GUI stack teleop 4_run_env: $BI_ARM_START_RUN_ENV"
-echo ">>> GUI camera-only: $BI_ARM_CAMERA_ONLY"
-echo ">>> 右臂 teleop ZMQ: $FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT"
 echo ">>> 右机: $BI_ARM_RIGHT_SSH"
 echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
-if [[ -n "${BI_ARM_RIGHT_TELEOP_PORT:-}" ]]; then
-    echo ">>> 右臂同构臂串口: $BI_ARM_RIGHT_TELEOP_PORT"
-else
-    echo ">>> 右臂同构臂串口: 自动检测右臂默认 FTDI；不会自动 fallback 到左臂串口"
-fi
 if [[ -n "${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-}" ]]; then
     echo ">>> 右臂 Robotiq 串口: $BI_ARM_RIGHT_ROBOTIQ_COMPORT"
 else
