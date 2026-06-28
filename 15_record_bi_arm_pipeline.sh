@@ -8,6 +8,8 @@ RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
 RIGHT_RECORD_ZMQ_HOST="${FRANKA_RIGHT_ZMQ_HOST:-${BI_ARM_RIGHT_RECORD_ZMQ_HOST:-$RIGHT_SSH}}"
 RIGHT_RECORD_ZMQ_PORT="${FRANKA_RIGHT_ZMQ_PORT:-${BI_ARM_RIGHT_RECORD_ZMQ_PORT:-$RIGHT_REMOTE_ZMQ_PORT}}"
+RIGHT_TELEOP_ZMQ_HOST="${BI_ARM_RIGHT_TELEOP_ZMQ_HOST:-$RIGHT_RECORD_ZMQ_HOST}"
+RIGHT_TELEOP_ZMQ_PORT="${BI_ARM_RIGHT_TELEOP_ZMQ_PORT:-$RIGHT_RECORD_ZMQ_PORT}"
 LEFT_ZMQ_PORT="${BI_ARM_LEFT_ZMQ_PORT:-6002}"
 LEFT_ROBOT_PORT="${BI_ARM_LEFT_ROBOT_PORT:-50052}"
 LEFT_GRIPPER_PORT="${BI_ARM_LEFT_GRIPPER_PORT:-50054}"
@@ -71,6 +73,8 @@ Environment:
   BI_ARM_RIGHT_RECORD_ZMQ_HOST=192.168.1.131
   BI_ARM_RIGHT_RECORD_ZMQ_PORT=6001
   FRANKA_RIGHT_ZMQ_HOST/FRANKA_RIGHT_ZMQ_PORT override the recorder endpoint.
+  BI_ARM_RIGHT_TELEOP_ZMQ_HOST=$RIGHT_RECORD_ZMQ_HOST
+  BI_ARM_RIGHT_TELEOP_ZMQ_PORT=$RIGHT_RECORD_ZMQ_PORT
   BI_ARM_READY_TIMEOUT=120
   BI_ARM_LOG_ROOT=$REPO_ROOT/logs/bi_arm_pipeline
   BI_ARM_CLEAN_STALE=1
@@ -90,9 +94,11 @@ Environment:
 This script starts local left_franka/1-4, starts remote right_franka/1-4
 through SSH, opens an SSH tunnel from local 16001 to remote 6001, then runs
 the dual-arm recorder on this host. With BI_ARM_RIGHT_ONLY=1 and
-BI_ARM_STACK_ONLY=1, it starts only the remote right_franka/1-3 stack plus the
-right-arm SSH tunnel for the GUI right-arm single recorder. Set
-BI_ARM_START_RUN_ENV=1 if the GUI stack should also start teleop 4_run_env.
+BI_ARM_STACK_ONLY=1, it starts the remote right_franka/1-3 stack plus the
+right-arm SSH tunnel for the GUI right-arm single recorder. With
+BI_ARM_RIGHT_ONLY=1 and BI_ARM_START_RUN_ENV=1, teleop 4_run_env runs locally so
+it can read the local homomorphic-arm serial port and control the remote right
+arm through the configured right ZMQ endpoint.
 EOF
 }
 
@@ -382,6 +388,35 @@ EOF
     remote_bash "$cmd" || true
 }
 
+kill_local_right_teleop_holder() {
+    local teleop_port="$RIGHT_TELEOP_PORT_OVERRIDE"
+    local cmd_filter_port="$RIGHT_TELEOP_ZMQ_PORT"
+    local pids
+    pids="$(
+        {
+            if [[ -n "$teleop_port" && -e "$teleop_port" ]] && command -v fuser >/dev/null 2>&1; then
+                fuser "$teleop_port" 2>/dev/null | tr -cs '0-9' '\n' || true
+                printf '\n'
+            fi
+            ps -eo pid=,cmd= | awk -v port="$teleop_port" -v zmq_port="$cmd_filter_port" '
+                /teleop\/experiments\/run_env.py/ && (
+                    (port != "" && (index($0, "--teleop_port=" port) || index($0, "--teleop_port " port))) ||
+                    index($0, "--tele_port=" zmq_port) ||
+                    index($0, "--tele_port " zmq_port)
+                ) {print $1}
+                /right_franka\/4_run_env.sh/ {print $1}
+            '
+        } | awk '/^[0-9]+$/ && !seen[$0]++'
+    )"
+    if [[ -n "$pids" ]]; then
+        log "Cleaning stale local right teleop process: $pids"
+        local pid
+        for pid in $pids; do
+            terminate_pid_tree "$pid" "stale local right teleop"
+        done
+    fi
+}
+
 cleanup_stale_ports() {
     [[ "${BI_ARM_CLEAN_STALE:-1}" == "0" ]] && return 0
     if [[ "$RIGHT_ONLY" == "1" ]]; then
@@ -393,6 +428,7 @@ cleanup_stale_ports() {
         kill_port_local "left ZMQ node" "$LEFT_ZMQ_PORT"
     fi
     kill_port_local "right ZMQ tunnel" "$RIGHT_LOCAL_ZMQ_PORT"
+    kill_local_right_teleop_holder
     kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
     kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
     kill_port_remote "right ZMQ node" "$RIGHT_REMOTE_ZMQ_PORT"
@@ -716,6 +752,9 @@ start_local_script() {
         export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
+        export RIGHT_TELEOP_PORT="$RIGHT_TELEOP_PORT_OVERRIDE"
+        export RIGHT_TELEOP_ZMQ_HOST="$RIGHT_TELEOP_ZMQ_HOST"
+        export RIGHT_TELEOP_ZMQ_PORT="$RIGHT_TELEOP_ZMQ_PORT"
         export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
         export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
         exec bash "$script"
@@ -773,6 +812,9 @@ check_local_script() {
         export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
+        export RIGHT_TELEOP_PORT="$RIGHT_TELEOP_PORT_OVERRIDE"
+        export RIGHT_TELEOP_ZMQ_HOST="$RIGHT_TELEOP_ZMQ_HOST"
+        export RIGHT_TELEOP_ZMQ_PORT="$RIGHT_TELEOP_ZMQ_PORT"
         export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
         export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
         bash "$script" "$@"
@@ -908,6 +950,7 @@ main() {
     log "Stack-only mode: $STACK_ONLY"
     log "Right-only mode: $RIGHT_ONLY"
     log "Start teleop run_env: $START_RUN_ENV"
+    log "Right teleop ZMQ endpoint: $RIGHT_TELEOP_ZMQ_HOST:$RIGHT_TELEOP_ZMQ_PORT"
 
     if [[ "$RIGHT_ONLY" == "1" && "$STACK_ONLY" != "1" ]]; then
         abort "BI_ARM_RIGHT_ONLY=1 is only supported together with BI_ARM_STACK_ONLY=1 for GUI use."
@@ -949,13 +992,17 @@ main() {
     if [[ "$START_RUN_ENV" == "1" ]]; then
         if [[ "$RIGHT_ONLY" != "1" ]]; then
             check_local_script "left 4_run_env alignment" "$REPO_ROOT/left_franka/4_run_env.sh" --check-only
+            check_remote_script "right 4_run_env alignment" "4_run_env.sh" --check-only
+        else
+            check_local_script "right 4_run_env alignment" "$REPO_ROOT/right_franka/4_run_env.sh" --check-only
         fi
-        check_remote_script "right 4_run_env alignment" "4_run_env.sh" --check-only
 
         if [[ "$RIGHT_ONLY" != "1" ]]; then
             start_local_script "left 4_run_env" "$REPO_ROOT/left_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/left_4_run_env.log"
+            start_remote_script "right 4_run_env" "4_run_env.sh" check_env_loop_ready_remote "$REMOTE_LOG_DIR/right_4_run_env.log"
+        else
+            start_local_script "right 4_run_env" "$REPO_ROOT/right_franka/4_run_env.sh" check_env_loop_ready_local "$LOG_DIR/right_4_run_env.log"
         fi
-        start_remote_script "right 4_run_env" "4_run_env.sh" check_env_loop_ready_remote "$REMOTE_LOG_DIR/right_4_run_env.log"
     else
         log "Skipping teleop 4_run_env for stack-only GUI mode."
     fi

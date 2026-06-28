@@ -24,6 +24,17 @@ def print_color(*args, color=None, attrs=(), **kwargs):
     print(*args, **kwargs)
 
 
+def wrap_arm_action_to_nearest(action, reference):
+    action = np.asarray(action, dtype=float).copy()
+    reference = np.asarray(reference, dtype=float)
+    count = min(7, action.shape[0], reference.shape[0])
+    if count > 0:
+        action[:count] = reference[:count] + (
+            (action[:count] - reference[:count] + np.pi) % (2 * np.pi) - np.pi
+        )
+    return action
+
+
 @dataclass
 class Args:
     agent: str = "none"
@@ -157,10 +168,10 @@ def main(args):
 
     # going to start position
     print("Going to start position")
-    start_pos = agent.act(env.get_obs())
     obs = env.get_obs()
     joints = obs["joint_positions"]
     joints = np.array(joints)
+    start_pos = wrap_arm_action_to_nearest(agent.act(obs), joints)
 
     abs_deltas = np.abs(start_pos - joints)
     id_max_joint_delta = np.argmax(abs_deltas)
@@ -194,8 +205,8 @@ def main(args):
     max_delta = 0.05
     for _ in range(25):
         obs = env.get_obs()
-        command_joints = agent.act(obs)
         current_joints = obs["joint_positions"]
+        command_joints = wrap_arm_action_to_nearest(agent.act(obs), current_joints)
         delta = command_joints - current_joints
         max_joint_delta = np.abs(delta).max()
         if max_joint_delta > max_delta:
@@ -204,7 +215,7 @@ def main(args):
 
     obs = env.get_obs()
     joints = obs["joint_positions"]
-    action = agent.act(obs)
+    action = wrap_arm_action_to_nearest(agent.act(obs), joints)
     if (action - joints > 0.5).any():
         print("Action is too big")
 
@@ -235,7 +246,7 @@ def main(args):
             end="",
             flush=True,
         )
-        action = agent.act(obs)
+        action = wrap_arm_action_to_nearest(agent.act(obs), obs["joint_positions"])
         dt = datetime.datetime.now()
         if args.use_save_interface:
             state = kb_interface.update()
