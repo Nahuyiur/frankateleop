@@ -6,6 +6,8 @@ RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
+RIGHT_RECORD_ZMQ_HOST="${FRANKA_RIGHT_ZMQ_HOST:-${BI_ARM_RIGHT_RECORD_ZMQ_HOST:-$RIGHT_SSH}}"
+RIGHT_RECORD_ZMQ_PORT="${FRANKA_RIGHT_ZMQ_PORT:-${BI_ARM_RIGHT_RECORD_ZMQ_PORT:-$RIGHT_REMOTE_ZMQ_PORT}}"
 LEFT_ZMQ_PORT="${BI_ARM_LEFT_ZMQ_PORT:-6002}"
 LEFT_ROBOT_PORT="${BI_ARM_LEFT_ROBOT_PORT:-50052}"
 LEFT_GRIPPER_PORT="${BI_ARM_LEFT_GRIPPER_PORT:-50054}"
@@ -58,6 +60,9 @@ Environment:
   BI_ARM_RIGHT_SSH=192.168.1.131
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
+  BI_ARM_RIGHT_RECORD_ZMQ_HOST=192.168.1.131
+  BI_ARM_RIGHT_RECORD_ZMQ_PORT=6001
+  FRANKA_RIGHT_ZMQ_HOST/FRANKA_RIGHT_ZMQ_PORT override the recorder endpoint.
   BI_ARM_READY_TIMEOUT=120
   BI_ARM_LOG_ROOT=$REPO_ROOT/logs/bi_arm_pipeline
   BI_ARM_CLEAN_STALE=1
@@ -335,10 +340,12 @@ teleop_port=$(q "$teleop_port")
 pids="\$(
     {
         if [[ -e "\$teleop_port" ]] && command -v fuser >/dev/null 2>&1; then
-            fuser "\$teleop_port" 2>/dev/null | tr ' ' '\n' || true
+            fuser "\$teleop_port" 2>/dev/null | tr -cs '0-9' '\n' || true
+            printf '\n'
         fi
         ps -eo pid=,cmd= | awk -v port="\$teleop_port" '
-            /teleop\\/experiments\\/run_env.py/ && index(\$0, "--teleop_port=" port) {print \$1}
+            /teleop\\/experiments\\/run_env.py/ && (index(\$0, "--teleop_port=" port) || index(\$0, "--teleop_port " port)) {print \$1}
+            /right_franka\\/4_run_env.sh/ {print \$1}
         '
     } | awk '/^[0-9]+$/ && !seen[\$0]++'
 )"
@@ -809,6 +816,7 @@ run_recording() {
     shift 2
 
     log "Starting dual-arm recorder in foreground."
+    log "Right recorder ZMQ endpoint: $RIGHT_RECORD_ZMQ_HOST:$RIGHT_RECORD_ZMQ_PORT"
     log "Use RGB window controls: s=start, w=pause, e=save, d=discard, k=keyframe, q=save+quit."
 
     set +e
@@ -834,8 +842,8 @@ run_recording() {
             --output-root "$output_root" \
             --left-host 127.0.0.1 \
             --left-port "$LEFT_ZMQ_PORT" \
-            --right-host 127.0.0.1 \
-            --right-port "$RIGHT_LOCAL_ZMQ_PORT" \
+            --right-host "$RIGHT_RECORD_ZMQ_HOST" \
+            --right-port "$RIGHT_RECORD_ZMQ_PORT" \
             "$@"
     )
     local rc="$?"

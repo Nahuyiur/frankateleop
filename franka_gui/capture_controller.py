@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import queue
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -98,6 +99,9 @@ class CaptureThread(QtCore.QThread):
         self._robot = None
         self._left_robot = None
         self._right_robot = None
+        self._robot_sampler = None
+        self._left_robot_sampler = None
+        self._right_robot_sampler = None
         self._robot_warned = False
         self._dual_read_executor = ThreadPoolExecutor(
             max_workers=2,
@@ -194,6 +198,12 @@ class CaptureThread(QtCore.QThread):
                     camera.close()
                 except Exception:
                     pass
+            for sampler in (self._robot_sampler, self._left_robot_sampler, self._right_robot_sampler):
+                if sampler is not None:
+                    try:
+                        sampler.close()
+                    except Exception:
+                        pass
             if self._robot is not None:
                 try:
                     self._robot.close()
@@ -337,48 +347,34 @@ class CaptureThread(QtCore.QThread):
         return self._build_single_record_frame(rgb_frames)
 
     def _build_single_record_frame(self, rgb_frames: Dict[str, np.ndarray]) -> Dict[str, Any]:
-        robot = self._ensure_robot()
-        robot_observations = robot.get_observations()
-        joint_state = robot.get_joint_state()
-        if "ee_pose_euler" not in robot_observations:
-            raise RuntimeError(
-                "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
-            )
-        if not any(
-            key in robot_observations
-            for key in (
-                "gripper_closedness",
-                "gripper_target_width",
-            )
-        ):
-            raise RuntimeError(
-                "robot node 缺少连续夹爪字段，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
-            )
+        if self.options.mock:
+            state = _fetch_arm_state(self._ensure_robot())
+        else:
+            state = self._ensure_robot_sampler().snapshot()
         now = time.time()
-        gripper_fields = observation_gripper_fields(
-            robot_observations,
-            joint_state,
-            timestamp=now,
-        )
         frame = {
             "schema_version": SINGLE_SCHEMA_VERSION,
-            "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
-            "joint": _as_saved_value(joint_state[:7]),
-            **gripper_fields,
+            "frame_index": len(self._active.frames) if self._active is not None else 0,
             "timestamp": now,
+            **state,
         }
         for name, rgb in rgb_frames.items():
             frame[f"{name}_image"] = rgb[:, :, ::-1].copy()
         return frame
 
     def _build_dual_record_frame(self, rgb_frames: Dict[str, np.ndarray]) -> Dict[str, Any]:
-        left_robot, right_robot = self._ensure_dual_robots()
         loop_start_monotonic = time.monotonic()
         loop_start_timestamp = time.time()
-        left_future = self._dual_read_executor.submit(_fetch_arm_state, left_robot)
-        right_future = self._dual_read_executor.submit(_fetch_arm_state, right_robot)
-        left_state = left_future.result()
-        right_state = right_future.result()
+        if self.options.mock:
+            left_robot, right_robot = self._ensure_dual_robots()
+            left_future = self._dual_read_executor.submit(_fetch_arm_state, left_robot)
+            right_future = self._dual_read_executor.submit(_fetch_arm_state, right_robot)
+            left_state = left_future.result()
+            right_state = right_future.result()
+        else:
+            left_sampler, right_sampler = self._ensure_dual_robot_samplers()
+            left_state = left_sampler.snapshot()
+            right_state = right_sampler.snapshot()
         loop_end_monotonic = time.monotonic()
         timestamp = time.time()
 
@@ -443,6 +439,36 @@ class CaptureThread(QtCore.QThread):
                 "right",
             )
         return self._left_robot, self._right_robot
+
+    def _ensure_robot_sampler(self):
+        if self._robot_sampler is None:
+            self._robot_sampler = _RobotStateSampler(
+                self.options.robot_host,
+                self.options.robot_port,
+                self.options.robot_timeout_ms,
+                "robot",
+            )
+            self._robot_sampler.start()
+        return self._robot_sampler
+
+    def _ensure_dual_robot_samplers(self):
+        if self._left_robot_sampler is None:
+            self._left_robot_sampler = _RobotStateSampler(
+                self.options.left_robot_host,
+                self.options.left_robot_port,
+                self.options.dual_robot_timeout_ms,
+                "left",
+            )
+            self._left_robot_sampler.start()
+        if self._right_robot_sampler is None:
+            self._right_robot_sampler = _RobotStateSampler(
+                self.options.right_robot_host,
+                self.options.right_robot_port,
+                self.options.dual_robot_timeout_ms,
+                "right",
+            )
+            self._right_robot_sampler.start()
+        return self._left_robot_sampler, self._right_robot_sampler
 
 
 class CaptureController(QtCore.QObject):
@@ -680,6 +706,93 @@ def _sleep_to_capture_rate(loop_started: float, fps: int) -> None:
         time.sleep(remaining)
 
 
+class _RobotStateSampler:
+    def __init__(self, host: str, port: int, timeout_ms: int, label: str) -> None:
+        self.host = host
+        self.port = port
+        self.timeout_ms = timeout_ms
+        self.label = label
+        self._robot = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._latest_state: Dict[str, Any] | None = None
+        self._latest_error: str | None = None
+        self._seq = 0
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._robot = _connect_checked_robot(self.host, self.port, self.timeout_ms, self.label)
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"gui-{self.label}-robot-state",
+            daemon=True,
+        )
+        self._thread.start()
+        self._wait_until_ready()
+
+    def _wait_until_ready(self) -> None:
+        deadline = time.monotonic() + max(1.0, self.timeout_ms / 1000.0)
+        error = None
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._latest_state is not None:
+                    return
+                error = self._latest_error
+            time.sleep(0.01)
+        if error is not None:
+            raise RuntimeError(f"{self.label} robot sampler failed: {error}")
+        raise TimeoutError(f"Timed out waiting for {self.label} robot sampler")
+
+    def _run(self) -> None:
+        assert self._robot is not None
+        period = 1.0 / FIXED_CAPTURE_FPS
+        while not self._stop.is_set():
+            started = time.monotonic()
+            try:
+                state = _fetch_arm_state(self._robot)
+            except Exception as exc:
+                with self._lock:
+                    self._latest_error = str(exc)
+                self._stop.wait(0.05)
+                continue
+            with self._lock:
+                self._seq += 1
+                state["robot_state_seq"] = self._seq
+                state["robot_sampler_error"] = ""
+                self._latest_state = state
+                self._latest_error = None
+            self._stop.wait(max(0.0, period - (time.monotonic() - started)))
+
+    def snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            if self._latest_state is None:
+                error = self._latest_error
+                if error is not None:
+                    raise RuntimeError(f"{self.label} robot sampler failed: {error}")
+                raise RuntimeError(f"{self.label} robot sampler has no state yet")
+            state = dict(self._latest_state)
+            error = self._latest_error
+        state["robot_sampler_error"] = error or state.get("robot_sampler_error", "")
+        sample_time = state.get("robot_state_sample_monotonic")
+        if sample_time is not None:
+            state["robot_state_age_ms"] = (time.monotonic() - float(sample_time)) * 1000.0
+        else:
+            state["robot_state_age_ms"] = float("nan")
+        state["robot_state_valid"] = True
+        return state
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.timeout_ms / 1000.0))
+            self._thread = None
+        if self._robot is not None:
+            self._robot.close()
+            self._robot = None
+
+
 def _connect_checked_robot(host: str, port: int, timeout_ms: int, label: str):
     robot = RobotZMQClient(host, port, timeout_ms=timeout_ms)
     try:
@@ -697,11 +810,13 @@ def _fetch_arm_state(robot: RobotZMQClient) -> Dict[str, Any]:
     start_wall = time.time()
     start_monotonic = time.monotonic()
     robot_observations = robot.get_observations()
-    joint_state = robot.get_joint_state()
+    joint_state = robot_observations.get("joint_positions")
+    if joint_state is None:
+        joint_state = robot.get_joint_state()
     end_monotonic = time.monotonic()
     end_wall = time.time()
 
-    state = _extract_arm_state(robot_observations, joint_state)
+    state = _extract_arm_state(robot_observations, joint_state, timestamp=end_wall)
     state.update(
         {
             "robot_read_start_timestamp": start_wall,
@@ -709,12 +824,21 @@ def _fetch_arm_state(robot: RobotZMQClient) -> Dict[str, Any]:
             "robot_read_start_monotonic": start_monotonic,
             "robot_read_end_monotonic": end_monotonic,
             "robot_read_duration_ms": (end_monotonic - start_monotonic) * 1000.0,
+            "robot_state_sample_timestamp": end_wall,
+            "robot_state_sample_monotonic": end_monotonic,
+            "robot_state_age_ms": 0.0,
+            "robot_state_valid": True,
         }
     )
     return state
 
 
-def _extract_arm_state(robot_observations: Dict[str, Any], joint_state: Any) -> Dict[str, Any]:
+def _extract_arm_state(
+    robot_observations: Dict[str, Any],
+    joint_state: Any,
+    *,
+    timestamp: float | None = None,
+) -> Dict[str, Any]:
     if "ee_pose_euler" not in robot_observations:
         raise RuntimeError(
             "robot node 缺少 ee_pose_euler，请重启 3_launch_node.sh 并确认 fr3 observation 已更新。"
@@ -733,7 +857,7 @@ def _extract_arm_state(robot_observations: Dict[str, Any], joint_state: Any) -> 
     gripper_fields = observation_gripper_fields(
         robot_observations,
         joint_state,
-        timestamp=time.time(),
+        timestamp=timestamp if timestamp is not None else time.time(),
     )
     return {
         "pose": _as_saved_value(robot_observations["ee_pose_euler"]),
