@@ -55,6 +55,7 @@ class Args:
     start_joints: Optional[Tuple[float, ...]] = None
 
     teleop_port: Optional[str] = None
+    teleop_config_port: Optional[str] = None
     mock: bool = False
     use_save_interface: bool = False
     data_dir: str = "~/bc_data"
@@ -142,7 +143,11 @@ def main(args):
             else:
                 reset_joints = args.start_joints
                 reset_joints = np.array(reset_joints)
-            agent = TeleopAgent(port=teleop_port, start_joints=args.start_joints)
+            agent = TeleopAgent(
+                port=teleop_port,
+                config_port=args.teleop_config_port,
+                start_joints=args.start_joints,
+            )
             curr_joints = env.get_obs()["joint_positions"]
             curr_joints = np.array(curr_joints)
             if args.check_only:
