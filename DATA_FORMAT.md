@@ -6,6 +6,9 @@
 
 ```bash
 bash 6_record_fr3.sh <task>
+bash A_run_left_arm_capture_gui.sh
+bash B_run_right_arm_capture_gui.sh
+bash C_run_dual_arm_capture_gui.sh
 ```
 
 默认保存根目录：
@@ -20,10 +23,22 @@ bash 6_record_fr3.sh <task>
 <output_root>/<task>/<episode_index>/
 ```
 
+GUI 入口会在保存前要求质量分层，保存路径为：
+
+```text
+<output_root>/<task>/<quality>/<episode_index>/
+```
+
+其中 `<quality>` 为 `High_Quality`、`Low_Quality` 或 `Failure`。三个目录
+独立计数，分别从 `0` 开始编号。`Failure` 用于值得保留的失败轨迹；明显误操作、
+无训练价值的数据应继续使用 `d` 丢弃，不会写入任何质量目录。
+
 例如：
 
 ```text
 /home/pnp/Desktop/franka_record_data/pick_block/3/
+/home/pnp/Desktop/franka_record_data/pick_block/High_Quality/3/
+/home/pnp/Desktop/franka_record_data/pick_block/Failure/0/
 ```
 
 ## Episode 目录结构
@@ -46,7 +61,8 @@ exterior_2.mp4
 ```
 
 当前 CLI 双臂和 GUI 会保存 `metadata.json`；新版 CLI 单臂也会保存
-`metadata.json`。当前没有保存 depth 数据。
+`metadata.json`。GUI 还会保存 `instruction.txt`，并在 `metadata.json` 中写入
+`text_instruction`、`quality` 和 `relative_episode_dir`。当前没有保存 depth 数据。
 
 ## `pkl.gz` 顶层结构
 
@@ -59,6 +75,8 @@ import gzip
 import pickle
 
 path = "/home/pnp/Desktop/franka_record_data/pick_block/3/3.pkl.gz"
+# GUI 质量分层数据示例：
+# path = "/home/pnp/Desktop/franka_record_data/pick_block/High_Quality/3/3.pkl.gz"
 
 with gzip.open(path, "rb") as f:
     obj = pickle.load(f)
@@ -427,6 +445,16 @@ k = 添加关键帧
 q = 保存当前 episode 并退出
 ```
 
+运行 A/B/C GUI 时，`Text instruction` 必填。按 `e`、`q` 或点击 `保存当前`
+会先进入蓝色 `JUDGING` 状态，不会立刻落盘；随后必须选择质量分层：
+
+```text
+h = 保存到 High_Quality
+l = 保存到 Low_Quality
+f = 保存到 Failure
+d = 丢弃当前 episode，不写入任何质量目录
+```
+
 ## 快速检查数据
 
 可以用下面脚本检查一条数据：
@@ -437,6 +465,8 @@ import pickle
 import numpy as np
 
 path = "/home/pnp/Desktop/franka_record_data/pick_block/3/3.pkl.gz"
+# GUI 质量分层数据示例：
+# path = "/home/pnp/Desktop/franka_record_data/pick_block/High_Quality/3/3.pkl.gz"
 
 with gzip.open(path, "rb") as f:
     obj = pickle.load(f)
@@ -511,6 +541,8 @@ action[-1] = [pose[-1], joint[-1], gripper_closedness[-1]]
 
 ```bash
 bash 10_convert_episode_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_block/3
+# GUI 质量分层数据示例：
+bash 10_convert_episode_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_block/High_Quality/3
 ```
 
 整个 task 转换：
@@ -518,6 +550,9 @@ bash 10_convert_episode_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_blo
 ```bash
 bash 11_convert_task_to_hdf5.sh /home/pnp/Desktop/franka_record_data/pick_block
 ```
+
+如果 task 目录下有 `High_Quality`、`Low_Quality` 或 `Failure` 子目录，转换器会
+按质量目录展开读取，并在输出 metadata 中保留 quality 信息。
 
 HDF5 的核心字段是：
 

@@ -32,7 +32,7 @@ from franka_lerobot.converter import (
 
 FORMAT_VERSION = "franka_hdf5_v2"
 DEFAULT_COMPRESSION = "gzip"
-QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality")
+QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality", "Failure")
 QUALITY_DIR_SET = set(QUALITY_DIR_NAMES)
 
 
@@ -40,6 +40,7 @@ QUALITY_DIR_SET = set(QUALITY_DIR_NAMES)
 class EpisodeWriteResult:
     episode_index: int
     source_episode_index: int | None
+    quality: str | None
     length: int
     path: Path
 
@@ -162,6 +163,7 @@ def convert_task_dataset(
             EpisodeWriteResult(
                 episode_index=episode_index,
                 source_episode_index=episode.source_episode_index,
+                quality=_infer_quality_from_episode_path(episode.pkl_path),
                 length=len(episode.frames),
                 path=output_file,
             )
@@ -242,12 +244,14 @@ def _write_hdf5_episode(
 
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output_file, "w") as h5:
+        quality = _infer_quality_from_episode_path(episode_path)
         h5.attrs["format_version"] = FORMAT_VERSION
         h5.attrs["task"] = task_description
         h5.attrs["robot_type"] = robot_type
         h5.attrs["fps"] = int(fps)
         h5.attrs["episode_index"] = int(episode_index)
         h5.attrs["source_episode_index"] = -1 if source_episode_index is None else int(source_episode_index)
+        h5.attrs["quality"] = quality or ""
         h5.attrs["source_pkl"] = str(episode_path)
         h5.attrs["num_frames"] = int(num_frames)
         h5.attrs["state_names"] = json.dumps(STATE_NAMES)
@@ -359,6 +363,7 @@ def _write_task_metadata(
             {
                 "episode_index": result.episode_index,
                 "source_episode_index": result.source_episode_index,
+                "quality": result.quality,
                 "length": result.length,
                 "path": str(result.path.relative_to(output_root)),
             }

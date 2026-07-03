@@ -37,7 +37,8 @@ FIXED_CAPTURE_FPS = 30
 GUI_CAMERA_READ_TIMEOUT_MS = 3000
 HIGH_QUALITY_DIR = "High_Quality"
 LOW_QUALITY_DIR = "Low_Quality"
-QUALITY_DIRS = (HIGH_QUALITY_DIR, LOW_QUALITY_DIR)
+FAILURE_DIR = "Failure"
+QUALITY_DIRS = (HIGH_QUALITY_DIR, LOW_QUALITY_DIR, FAILURE_DIR)
 
 
 @dataclass
@@ -550,7 +551,10 @@ class CaptureController(QtCore.QObject):
             self.status_changed.emit("当前已经在录制中。")
             return
         if self._active_state == "quality_pending":
-            self.status_changed.emit("当前 episode 等待质量分层，请先按 h 或 l。")
+            self.status_changed.emit("当前 episode 等待质量分层，请先按 h、l 或 f。")
+            return
+        if self._active_state in {"finishing", "discarding"}:
+            self.status_changed.emit("当前 episode 正在结束或丢弃处理中，请稍等。")
             return
         if self._active_state == "saving":
             self.status_changed.emit("当前 episode 正在后台保存，请等待保存完成后再开始下一条。")
@@ -587,7 +591,7 @@ class CaptureController(QtCore.QObject):
     def finish(self) -> None:
         if self.thread is not None and self._active_state in {"recording", "paused"}:
             self._active_state = "finishing"
-            self.status_changed.emit("正在结束当前 episode，随后请按 h 或 l 完成质量分层。")
+            self.status_changed.emit("正在结束当前 episode，随后请按 h、l 或 f 完成质量分层。")
             self.thread.enqueue("finish")
 
     def discard(self) -> None:
@@ -617,6 +621,9 @@ class CaptureController(QtCore.QObject):
 
     def mark_low_quality(self) -> None:
         self._save_pending_quality(LOW_QUALITY_DIR)
+
+    def mark_failure(self) -> None:
+        self._save_pending_quality(FAILURE_DIR)
 
     def scan_tasks(self) -> List[str]:
         root = Path(self.options.output_root).expanduser()
@@ -652,9 +659,7 @@ class CaptureController(QtCore.QObject):
         return max(existing + list(reserved), default=-1) + 1
 
     def _next_display_episode_index(self, task: str) -> int:
-        high = self._next_episode_index_for_task(task, HIGH_QUALITY_DIR)
-        low = self._next_episode_index_for_task(task, LOW_QUALITY_DIR)
-        return min(high, low)
+        return min(self._next_episode_index_for_task(task, quality) for quality in QUALITY_DIRS)
 
     def _release_reserved(self, task: str, index: int, quality: str) -> None:
         self._reserved.setdefault((task, quality), set()).discard(index)
@@ -688,7 +693,8 @@ class CaptureController(QtCore.QObject):
         self._active_state = "quality_pending"
         self.active_episode_changed.emit(request.task, request.index, "quality_pending")
         self.status_changed.emit(
-            f"episode {request.task}/{request.index} 等待质量分层：按 h 保存到高质量，按 l 保存到低质量。"
+            f"episode {request.task}/{request.index} 等待质量分层："
+            "按 h 保存到高质量，按 l 保存到低质量，按 f 保存到 Failure，按 d 丢弃。"
         )
 
     def _on_episode_discarded(self, task: str, index: int, frames: int) -> None:
@@ -723,7 +729,8 @@ class CaptureController(QtCore.QObject):
             self._active_state = "quality_pending"
             self.active_episode_changed.emit(request.task, request.index, "quality_pending")
             self.status_changed.emit(
-                f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l 或按 d 丢弃: {task}/{quality}/{index}"
+                f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
+                f"{task}/{quality}/{index}"
             )
         elif self._active_task is None:
             self._active_state = "idle"

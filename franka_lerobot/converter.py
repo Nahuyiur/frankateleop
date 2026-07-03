@@ -25,7 +25,7 @@ DEFAULT_CHUNKS_SIZE = 1000
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100
 DEFAULT_VIDEO_FILE_SIZE_IN_MB = 200
 GRIPPER_BINARY_THRESHOLD = GRIPPER_CLOSED_THRESHOLD
-QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality")
+QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality", "Failure")
 QUALITY_DIR_SET = set(QUALITY_DIR_NAMES)
 STATE_NAMES = [f"joint_{idx}" for idx in range(1, 8)] + ["gripper_closedness"]
 POSE_NAMES = ["x", "y", "z", "rx", "ry", "rz"]
@@ -47,6 +47,7 @@ class ConversionError(RuntimeError):
 class EpisodeData:
     pkl_path: Path
     source_episode_index: int | None
+    quality: str | None
     frames: list[dict[str, Any]]
     camera_fields: list[str]
     camera_shapes: dict[str, tuple[int, int, int]]
@@ -56,6 +57,7 @@ class EpisodeData:
 class EpisodeWriteResult:
     episode_index: int
     source_episode_index: int | None
+    quality: str | None
     length: int
     stats: dict[str, dict[str, np.ndarray]]
     data_path: Path
@@ -155,6 +157,7 @@ def load_episode(path: str | Path) -> EpisodeData:
     return EpisodeData(
         pkl_path=pkl_path,
         source_episode_index=_parse_source_episode_index(pkl_path),
+        quality=_infer_quality_from_episode_path(pkl_path),
         frames=frames,
         camera_fields=camera_fields,
         camera_shapes=camera_shapes,
@@ -348,6 +351,7 @@ def _write_episode(
     return EpisodeWriteResult(
         episode_index=episode_index,
         source_episode_index=episode.source_episode_index,
+        quality=episode.quality,
         length=num_frames,
         stats=stats,
         data_path=data_path,
@@ -456,7 +460,13 @@ def _write_metadata(
     _write_jsonl(
         meta_dir / "episodes.jsonl",
         [
-            {"episode_index": result.episode_index, "tasks": [task_description], "length": result.length}
+            {
+                "episode_index": result.episode_index,
+                "source_episode_index": result.source_episode_index,
+                "quality": result.quality,
+                "tasks": [task_description],
+                "length": result.length,
+            }
             for result in episode_results
         ],
     )

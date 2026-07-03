@@ -10,7 +10,12 @@ import numpy as np
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .capture_controller import HIGH_QUALITY_DIR, LOW_QUALITY_DIR, CaptureController
+from .capture_controller import (
+    FAILURE_DIR,
+    HIGH_QUALITY_DIR,
+    LOW_QUALITY_DIR,
+    CaptureController,
+)
 from .process_manager import ProcessManager
 
 
@@ -128,7 +133,16 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(
                 self,
                 "等待质量分层",
-                "当前 episode 已结束但还没有按 h/l 分层保存。请先按 h 保存到高质量，按 l 保存到低质量，或按 d 丢弃。",
+                "当前 episode 已结束但还没有按 h/l/f 分层保存。"
+                "请先按 h 保存到高质量，按 l 保存到低质量，按 f 保存到 Failure，或按 d 丢弃。",
+            )
+            event.ignore()
+            return
+        if self._episode_state == "saving":
+            QtWidgets.QMessageBox.warning(
+                self,
+                "正在后台保存",
+                "当前 episode 正在后台保存。请等待保存完成后再关闭。",
             )
             event.ignore()
             return
@@ -191,6 +205,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.controller.mark_high_quality()
         elif key == QtCore.Qt.Key.Key_L:
             self.controller.mark_low_quality()
+        elif key == QtCore.Qt.Key.Key_F:
+            self.controller.mark_failure()
         elif key == QtCore.Qt.Key.Key_Q:
             self.controller.finish()
         else:
@@ -410,6 +426,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.high_quality_btn.setObjectName("Success")
         self.low_quality_btn = QtWidgets.QPushButton("低质量 L")
         self.low_quality_btn.setObjectName("Neutral")
+        self.failure_btn = QtWidgets.QPushButton("失败 F")
+        self.failure_btn.setObjectName("Purple")
         layout.addWidget(self.record_btn)
         layout.addWidget(self.pause_btn)
         layout.addWidget(self.end_btn)
@@ -417,6 +435,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.keyframe_btn)
         layout.addWidget(self.high_quality_btn)
         layout.addWidget(self.low_quality_btn)
+        layout.addWidget(self.failure_btn)
 
         layout.addSpacing(6)
         disk_title = QtWidgets.QLabel("磁盘容量")
@@ -458,7 +477,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_path_label = QtWidgets.QLabel("")
         self.next_path_label.setObjectName("OutputRoot")
         self.next_path_label.setWordWrap(True)
-        self.next_path_label.setMinimumHeight(70)
+        self.next_path_label.setMinimumHeight(92)
         self.next_path_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -513,7 +532,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         hint = QtWidgets.QLabel(
             "快捷键:\ns 开始/继续, w 暂停, e/q 结束待分层\n"
-            "h 高质量保存, l 低质量保存, d 丢弃, k 关键帧"
+            "h 高质量保存, l 低质量保存, f 失败保存\n"
+            "d 丢弃, k 关键帧"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -560,6 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.keyframe_btn.clicked.connect(self.controller.add_keyframe)
         self.high_quality_btn.clicked.connect(self.controller.mark_high_quality)
         self.low_quality_btn.clicked.connect(self.controller.mark_low_quality)
+        self.failure_btn.clicked.connect(self.controller.mark_failure)
         self.new_task_btn.clicked.connect(self._create_task)
         self.task_combo.currentTextChanged.connect(self._update_next_path)
 
@@ -804,6 +825,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_quality_controls_enabled(self, enabled: bool) -> None:
         self.high_quality_btn.setEnabled(enabled)
         self.low_quality_btn.setEnabled(enabled)
+        self.failure_btn.setEnabled(enabled)
 
     def _parse_user_metadata(self) -> Optional[Dict[str, object]]:
         text = self.metadata_edit.toPlainText().strip()
@@ -824,24 +846,31 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_next_path(self) -> None:
         task = self.task_combo.currentText().strip()
         if not task or not _is_valid_task_name(task):
-            full_path = f"{self._fixed_output_root}/<task>/{HIGH_QUALITY_DIR}|{LOW_QUALITY_DIR}/<index>"
+            full_path = (
+                f"{self._fixed_output_root}/<task>/"
+                f"{HIGH_QUALITY_DIR}|{LOW_QUALITY_DIR}|{FAILURE_DIR}/<index>"
+            )
             self.next_path_label.setText(
                 f"{self._fixed_output_root}\n"
                 f"<task>/{HIGH_QUALITY_DIR}/<index>\n"
-                f"<task>/{LOW_QUALITY_DIR}/<index>"
+                f"<task>/{LOW_QUALITY_DIR}/<index>\n"
+                f"<task>/{FAILURE_DIR}/<index>"
             )
             self.next_path_label.setToolTip(full_path)
             return
         high_index = self.controller.peek_next_episode_index(task, HIGH_QUALITY_DIR)
         low_index = self.controller.peek_next_episode_index(task, LOW_QUALITY_DIR)
+        failure_index = self.controller.peek_next_episode_index(task, FAILURE_DIR)
         full_path = (
             f"{self._fixed_output_root}/{task}/{HIGH_QUALITY_DIR}/{high_index}\n"
-            f"{self._fixed_output_root}/{task}/{LOW_QUALITY_DIR}/{low_index}"
+            f"{self._fixed_output_root}/{task}/{LOW_QUALITY_DIR}/{low_index}\n"
+            f"{self._fixed_output_root}/{task}/{FAILURE_DIR}/{failure_index}"
         )
         self.next_path_label.setText(
             f"{self._fixed_output_root}\n"
             f"{task}/{HIGH_QUALITY_DIR}/{high_index}\n"
-            f"{task}/{LOW_QUALITY_DIR}/{low_index}"
+            f"{task}/{LOW_QUALITY_DIR}/{low_index}\n"
+            f"{task}/{FAILURE_DIR}/{failure_index}"
         )
         self.next_path_label.setToolTip(full_path)
 
