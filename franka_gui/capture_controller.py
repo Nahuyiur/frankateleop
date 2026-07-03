@@ -35,6 +35,9 @@ from .mock_sources import MockRobot, create_mock_cameras
 
 FIXED_CAPTURE_FPS = 30
 GUI_CAMERA_READ_TIMEOUT_MS = 3000
+HIGH_QUALITY_DIR = "High_Quality"
+LOW_QUALITY_DIR = "Low_Quality"
+QUALITY_DIRS = (HIGH_QUALITY_DIR, LOW_QUALITY_DIR)
 
 
 @dataclass
@@ -281,6 +284,7 @@ class CaptureThread(QtCore.QThread):
             keyframes=_valid_keyframes(active.keyframes, len(active.frames)),
             camera_names=active.camera_names,
             video_fps=active.video_fps,
+            text_instruction=active.task_description,
             metadata={
                 "source": "franka_gui",
                 "schema_version": (
@@ -486,11 +490,13 @@ class CaptureController(QtCore.QObject):
         self.options = options
         self.saver = AsyncEpisodeSaver(parent=self)
         self.thread: CaptureThread | None = None
-        self._reserved: Dict[str, set[int]] = {}
+        self._reserved: Dict[tuple[str, str], set[int]] = {}
         self._active_task: str | None = None
         self._active_index: int | None = None
         self._active_state = "idle"
         self._start_pending = False
+        self._pending_quality_request: EpisodeSaveRequest | None = None
+        self._saving_quality_requests: Dict[tuple[str, str, int], EpisodeSaveRequest] = {}
 
         self.saver.queue_changed.connect(self.save_queue_changed)
         self.saver.save_started.connect(
@@ -543,6 +549,12 @@ class CaptureController(QtCore.QObject):
         if self._active_state == "recording":
             self.status_changed.emit("当前已经在录制中。")
             return
+        if self._active_state == "quality_pending":
+            self.status_changed.emit("当前 episode 等待质量分层，请先按 h 或 l。")
+            return
+        if self._active_state == "saving":
+            self.status_changed.emit("当前 episode 正在后台保存，请等待保存完成后再开始下一条。")
+            return
         metadata = dict(user_metadata or {})
         if self._active_state == "paused" and self._active_task is not None:
             self._start_pending = True
@@ -556,7 +568,7 @@ class CaptureController(QtCore.QObject):
                 video_fps=self.options.video_fps,
             )
             return
-        index = self._allocate_episode_index(task)
+        index = self._next_display_episode_index(task)
         self._start_pending = True
         self.thread.enqueue(
             "start",
@@ -575,13 +587,23 @@ class CaptureController(QtCore.QObject):
     def finish(self) -> None:
         if self.thread is not None and self._active_state in {"recording", "paused"}:
             self._active_state = "finishing"
-            self.status_changed.emit("正在结束当前 episode，随后会进入后台保存队列。")
+            self.status_changed.emit("正在结束当前 episode，随后请按 h 或 l 完成质量分层。")
             self.thread.enqueue("finish")
 
     def discard(self) -> None:
+        if self._active_state == "quality_pending" and self._pending_quality_request is not None:
+            request = self._pending_quality_request
+            self._pending_quality_request = None
+            self._start_pending = False
+            self._active_task = None
+            self._active_index = None
+            self._active_state = "idle"
+            self.active_episode_changed.emit(request.task, request.index, "discarded")
+            self.status_changed.emit(
+                f"已丢弃待分层 episode: {request.task}, frames={len(request.frames)}"
+            )
+            return
         if self.thread is not None and self._active_state in {"recording", "paused"}:
-            if self._active_task is not None and self._active_index is not None:
-                self._release_reserved(self._active_task, self._active_index)
             self._active_state = "discarding"
             self.status_changed.emit("正在丢弃当前 episode。")
             self.thread.enqueue("discard")
@@ -590,14 +612,20 @@ class CaptureController(QtCore.QObject):
         if self.thread is not None:
             self.thread.enqueue("keyframe")
 
+    def mark_high_quality(self) -> None:
+        self._save_pending_quality(HIGH_QUALITY_DIR)
+
+    def mark_low_quality(self) -> None:
+        self._save_pending_quality(LOW_QUALITY_DIR)
+
     def scan_tasks(self) -> List[str]:
         root = Path(self.options.output_root).expanduser()
         if not root.exists():
             return []
         return sorted([path.name for path in root.iterdir() if path.is_dir()])
 
-    def peek_next_episode_index(self, task: str) -> int:
-        return self._next_episode_index_for_task(task)
+    def peek_next_episode_index(self, task: str, quality: str = HIGH_QUALITY_DIR) -> int:
+        return self._next_episode_index_for_task(task, quality)
 
     def disk_usage(self):
         root = Path(self.options.output_root).expanduser()
@@ -608,23 +636,28 @@ class CaptureController(QtCore.QObject):
         self.stop_preview()
         self.saver.shutdown()
 
-    def _allocate_episode_index(self, task: str) -> int:
-        next_index = self._next_episode_index_for_task(task)
-        self._reserved.setdefault(task, set()).add(next_index)
+    def _allocate_episode_index(self, task: str, quality: str) -> int:
+        next_index = self._next_episode_index_for_task(task, quality)
+        self._reserved.setdefault((task, quality), set()).add(next_index)
         return next_index
 
-    def _next_episode_index_for_task(self, task: str) -> int:
-        root = Path(self.options.output_root).expanduser() / task
+    def _next_episode_index_for_task(self, task: str, quality: str) -> int:
+        root = Path(self.options.output_root).expanduser() / task / quality
         existing: List[int] = []
         if root.exists():
             for child in root.iterdir():
                 if child.is_dir() and child.name.isdigit():
                     existing.append(int(child.name))
-        reserved = self._reserved.setdefault(task, set())
+        reserved = self._reserved.setdefault((task, quality), set())
         return max(existing + list(reserved), default=-1) + 1
 
-    def _release_reserved(self, task: str, index: int) -> None:
-        self._reserved.setdefault(task, set()).discard(index)
+    def _next_display_episode_index(self, task: str) -> int:
+        high = self._next_episode_index_for_task(task, HIGH_QUALITY_DIR)
+        low = self._next_episode_index_for_task(task, LOW_QUALITY_DIR)
+        return min(high, low)
+
+    def _release_reserved(self, task: str, index: int, quality: str) -> None:
+        self._reserved.setdefault((task, quality), set()).discard(index)
 
     def _on_recording_started(self, task: str, index: int) -> None:
         self._start_pending = False
@@ -649,15 +682,16 @@ class CaptureController(QtCore.QObject):
         self.recording_frame_count.emit(frames)
 
     def _on_episode_ready(self, request: EpisodeSaveRequest) -> None:
-        self._active_task = None
-        self._active_index = None
-        self._active_state = "saving"
-        self.active_episode_changed.emit(request.task, request.index, "saving")
-        self.status_changed.emit(f"episode {request.task}/{request.index} 已进入后台保存队列")
-        self.saver.enqueue(request)
+        self._pending_quality_request = request
+        self._active_task = request.task
+        self._active_index = request.index
+        self._active_state = "quality_pending"
+        self.active_episode_changed.emit(request.task, request.index, "quality_pending")
+        self.status_changed.emit(
+            f"episode {request.task}/{request.index} 等待质量分层：按 h 保存到高质量，按 l 保存到低质量。"
+        )
 
     def _on_episode_discarded(self, task: str, index: int, frames: int) -> None:
-        self._release_reserved(task, index)
         self._start_pending = False
         self._active_task = None
         self._active_index = None
@@ -666,6 +700,9 @@ class CaptureController(QtCore.QObject):
         self.status_changed.emit(f"已丢弃: {task}/{index}, frames={frames}")
 
     def _on_save_finished(self, task: str, index: int, output_dir: str, frame_count: int) -> None:
+        quality = Path(output_dir).parent.name
+        if quality in QUALITY_DIRS:
+            self._saving_quality_requests.pop((task, quality, index), None)
         self.episode_saved.emit(task, index, output_dir, frame_count)
         if self._active_task is None:
             self._active_state = "idle"
@@ -673,9 +710,75 @@ class CaptureController(QtCore.QObject):
         self.status_changed.emit(f"保存完成: {output_dir}, frames={frame_count}")
 
     def _on_save_failed(self, task: str, index: int, output_dir: str, error: str) -> None:
-        if self._active_task is None:
+        quality = Path(output_dir).parent.name
+        request = None
+        if quality in QUALITY_DIRS:
+            self._release_reserved(task, index, quality)
+            request = self._saving_quality_requests.pop((task, quality, index), None)
+        if request is not None and self._active_task is None:
+            request = self._prepare_quality_retry_request(request)
+            self._pending_quality_request = request
+            self._active_task = request.task
+            self._active_index = request.index
+            self._active_state = "quality_pending"
+            self.active_episode_changed.emit(request.task, request.index, "quality_pending")
+            self.status_changed.emit(
+                f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l 或按 d 丢弃: {task}/{quality}/{index}"
+            )
+        elif self._active_task is None:
             self._active_state = "idle"
+            self.active_episode_changed.emit(task, index, "save_failed")
         self.error.emit(f"保存失败: {task}/{index}\n{error}")
+
+    def _save_pending_quality(self, quality: str) -> None:
+        if quality not in QUALITY_DIRS:
+            raise ValueError(f"Unsupported episode quality: {quality}")
+        if self._active_state != "quality_pending" or self._pending_quality_request is None:
+            self.status_changed.emit("当前没有等待分层的 episode。")
+            return
+
+        request = self._pending_quality_request
+        index = self._allocate_episode_index(request.task, quality)
+        metadata = dict(request.metadata)
+        metadata["quality"] = quality
+        request = replace(
+            request,
+            index=index,
+            quality=quality,
+            metadata=metadata,
+        )
+        request_key = (request.task, quality, request.index)
+        self._saving_quality_requests[request_key] = request
+        self._pending_quality_request = None
+        self._active_task = None
+        self._active_index = None
+        self._active_state = "saving"
+        self.active_episode_changed.emit(request.task, request.index, "saving")
+        self.status_changed.emit(
+            f"episode {request.task}/{quality}/{request.index} 已进入后台保存队列"
+        )
+        try:
+            self.saver.enqueue(request)
+        except Exception as exc:
+            self._saving_quality_requests.pop(request_key, None)
+            self._release_reserved(request.task, request.index, quality)
+            request = self._prepare_quality_retry_request(request)
+            self._pending_quality_request = request
+            self._active_task = request.task
+            self._active_index = request.index
+            self._active_state = "quality_pending"
+            self.active_episode_changed.emit(request.task, request.index, "quality_pending")
+            self.error.emit(f"提交后台保存失败: {exc}")
+
+    def _prepare_quality_retry_request(self, request: EpisodeSaveRequest) -> EpisodeSaveRequest:
+        metadata = dict(request.metadata)
+        metadata.pop("quality", None)
+        return replace(
+            request,
+            index=self._next_display_episode_index(request.task),
+            quality="",
+            metadata=metadata,
+        )
 
 
 def _selected_camera_names(options: CaptureOptions) -> List[str]:

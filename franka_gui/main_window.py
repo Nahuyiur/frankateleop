@@ -10,7 +10,7 @@ import numpy as np
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from .capture_controller import CaptureController
+from .capture_controller import HIGH_QUALITY_DIR, LOW_QUALITY_DIR, CaptureController
 from .process_manager import ProcessManager
 
 
@@ -101,6 +101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1760, 960)
         self.setMinimumSize(1280, 760)
         self._build_ui()
+        self._set_quality_controls_enabled(False)
         self._connect_signals()
         self._refresh_tasks()
         self._refresh_disk()
@@ -120,6 +121,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self,
                 "仍在采集中",
                 "当前 episode 还没有保存或丢弃。请先按 e 保存，或按 d 丢弃。",
+            )
+            event.ignore()
+            return
+        if self._episode_state == "quality_pending":
+            QtWidgets.QMessageBox.warning(
+                self,
+                "等待质量分层",
+                "当前 episode 已结束但还没有按 h/l 分层保存。请先按 h 保存到高质量，按 l 保存到低质量，或按 d 丢弃。",
             )
             event.ignore()
             return
@@ -178,6 +187,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.controller.discard()
         elif key == QtCore.Qt.Key.Key_K:
             self.controller.add_keyframe()
+        elif key == QtCore.Qt.Key.Key_H:
+            self.controller.mark_high_quality()
+        elif key == QtCore.Qt.Key.Key_L:
+            self.controller.mark_low_quality()
         elif key == QtCore.Qt.Key.Key_Q:
             self.controller.finish()
         else:
@@ -393,11 +406,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.discard_btn.setObjectName("Danger")
         self.keyframe_btn = QtWidgets.QPushButton("关键帧")
         self.keyframe_btn.setObjectName("Purple")
+        self.high_quality_btn = QtWidgets.QPushButton("高质量 H")
+        self.high_quality_btn.setObjectName("Success")
+        self.low_quality_btn = QtWidgets.QPushButton("低质量 L")
+        self.low_quality_btn.setObjectName("Neutral")
         layout.addWidget(self.record_btn)
         layout.addWidget(self.pause_btn)
         layout.addWidget(self.end_btn)
         layout.addWidget(self.discard_btn)
         layout.addWidget(self.keyframe_btn)
+        layout.addWidget(self.high_quality_btn)
+        layout.addWidget(self.low_quality_btn)
 
         layout.addSpacing(6)
         disk_title = QtWidgets.QLabel("磁盘容量")
@@ -426,6 +445,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.task_combo = QtWidgets.QComboBox()
         self.task_combo.setEditable(True)
         self.task_combo.setInsertPolicy(QtWidgets.QComboBox.InsertPolicy.NoInsert)
+        self.instruction_edit = QtWidgets.QPlainTextEdit()
+        self.instruction_edit.setPlaceholderText("Describe the desired behavior for this episode")
+        self.instruction_edit.setMaximumHeight(72)
         self.new_task_btn = QtWidgets.QPushButton("新增采集任务")
         self.new_task_btn.setObjectName("Neutral")
         self.fps_label = QtWidgets.QLabel("30 Hz")
@@ -436,7 +458,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_path_label = QtWidgets.QLabel("")
         self.next_path_label.setObjectName("OutputRoot")
         self.next_path_label.setWordWrap(True)
-        self.next_path_label.setMinimumHeight(44)
+        self.next_path_label.setMinimumHeight(70)
         self.next_path_label.setTextInteractionFlags(
             QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -447,6 +469,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         form = QtWidgets.QFormLayout()
         form.addRow("任务名称", self.task_combo)
+        form.addRow("Text instruction", self.instruction_edit)
         form.addRow("", self.new_task_btn)
         form.addRow("采集频率", self.fps_label)
         form.addRow("保存根目录", self.output_root_label)
@@ -488,8 +511,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
         layout.addWidget(self.status_box)
 
-        hint = QtWidgets.QLabel("快捷键:\ns 开始/继续, w 暂停, e 保存\n"
-                                "d 丢弃, k 关键帧, q 保存当前")
+        hint = QtWidgets.QLabel(
+            "快捷键:\ns 开始/继续, w 暂停, e/q 结束待分层\n"
+            "h 高质量保存, l 低质量保存, d 丢弃, k 关键帧"
+        )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -533,6 +558,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.end_btn.clicked.connect(self.controller.finish)
         self.discard_btn.clicked.connect(self.controller.discard)
         self.keyframe_btn.clicked.connect(self.controller.add_keyframe)
+        self.high_quality_btn.clicked.connect(self.controller.mark_high_quality)
+        self.low_quality_btn.clicked.connect(self.controller.mark_low_quality)
         self.new_task_btn.clicked.connect(self._create_task)
         self.task_combo.currentTextChanged.connect(self._update_next_path)
 
@@ -557,15 +584,19 @@ class MainWindow(QtWidgets.QMainWindow):
         if not _is_valid_task_name(task):
             self._show_error("任务名称不能包含 / 或空字符")
             return
+        instruction = self.instruction_edit.toPlainText().strip()
+        if not instruction:
+            self._show_error("Text instruction 不能为空")
+            return
         user_metadata = self._parse_user_metadata()
         if user_metadata is None:
             return
         self.controller.options.output_root = self._fixed_output_root
-        self.controller.start_or_resume(task, "", user_metadata=user_metadata)
+        self.controller.start_or_resume(task, instruction, user_metadata=user_metadata)
 
     def _restart_preview(self) -> None:
-        if self._episode_state in {"recording", "paused"}:
-            self._show_error("录制或暂停中不能重启预览，请先保存或丢弃当前 episode。")
+        if self._episode_state in {"recording", "paused", "quality_pending"}:
+            self._show_error("录制、暂停或等待分层中不能重启预览，请先保存分层或丢弃当前 episode。")
             return
         self.controller.stop_preview()
         self.controller.start_preview()
@@ -651,18 +682,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._episode_state = state
         if state == "recording":
             self._set_config_controls_enabled(False)
+            self._set_quality_controls_enabled(False)
             self.status_box.setText("REC")
             self.status_box.setStyleSheet("background: #fff7ed; color: #9a3412; border-radius: 8px; font-size: 26px; font-weight: 800;")
         elif state == "paused":
             self._set_config_controls_enabled(False)
+            self._set_quality_controls_enabled(False)
             self.status_box.setText("PAUSE")
             self.status_box.setStyleSheet("background: #fefce8; color: #854d0e; border-radius: 8px; font-size: 26px; font-weight: 800;")
         elif state == "saving":
-            self._set_config_controls_enabled(True)
+            self._set_config_controls_enabled(False)
+            self._set_quality_controls_enabled(False)
             self.status_box.setText("SAVING")
-            self.status_box.setStyleSheet("background: #fef9c3; color: #713f12; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
+        elif state == "quality_pending":
+            self._set_config_controls_enabled(False)
+            self._set_quality_controls_enabled(True)
+            self.status_box.setText("JUDGING")
+            self.status_box.setStyleSheet("background: #eff6ff; color: #1d4ed8; border-radius: 8px; font-size: 26px; font-weight: 800;")
         else:
             self._set_config_controls_enabled(True)
+            self._set_quality_controls_enabled(False)
             self.status_box.setText("READY")
             self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
         self.active_episode.setText(f"当前 episode: {task}/{index} ({state})")
@@ -670,7 +710,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _episode_saved(self, task: str, index: int, output_dir: str, frames: int) -> None:
         self.saved_count += 1
         self.saved_episodes.setText(f"已保存: {self.saved_count}")
-        self.active_episode.setText(f"最近保存: {task}/{index}, frames={frames}")
+        self.active_episode.setText(f"最近保存: {_display_output_path(output_dir, self._fixed_output_root)}, frames={frames}")
         self._refresh_tasks()
         self._refresh_disk()
         self._update_next_path()
@@ -712,8 +752,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_next_path()
 
     def _create_task(self) -> None:
-        if self._episode_state in {"recording", "paused"}:
-            self._show_error("录制或暂停中不能新增任务，请先保存或丢弃当前 episode。")
+        if self._episode_state in {"recording", "paused", "quality_pending"}:
+            self._show_error("录制、暂停或等待分层中不能新增任务，请先保存分层或丢弃当前 episode。")
             return
 
         dialog = QtWidgets.QDialog(self)
@@ -758,7 +798,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_config_controls_enabled(self, enabled: bool) -> None:
         self.task_combo.setEnabled(enabled)
         self.new_task_btn.setEnabled(enabled)
+        self.instruction_edit.setEnabled(enabled)
         self.metadata_edit.setEnabled(enabled)
+
+    def _set_quality_controls_enabled(self, enabled: bool) -> None:
+        self.high_quality_btn.setEnabled(enabled)
+        self.low_quality_btn.setEnabled(enabled)
 
     def _parse_user_metadata(self) -> Optional[Dict[str, object]]:
         text = self.metadata_edit.toPlainText().strip()
@@ -779,13 +824,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_next_path(self) -> None:
         task = self.task_combo.currentText().strip()
         if not task or not _is_valid_task_name(task):
-            full_path = f"{self._fixed_output_root}/<task>/<index>"
-            self.next_path_label.setText(f"{self._fixed_output_root}\n<task>/<index>")
+            full_path = f"{self._fixed_output_root}/<task>/{HIGH_QUALITY_DIR}|{LOW_QUALITY_DIR}/<index>"
+            self.next_path_label.setText(
+                f"{self._fixed_output_root}\n"
+                f"<task>/{HIGH_QUALITY_DIR}/<index>\n"
+                f"<task>/{LOW_QUALITY_DIR}/<index>"
+            )
             self.next_path_label.setToolTip(full_path)
             return
-        index = self.controller.peek_next_episode_index(task)
-        full_path = f"{self._fixed_output_root}/{task}/{index}"
-        self.next_path_label.setText(f"{self._fixed_output_root}\n{task}/{index}")
+        high_index = self.controller.peek_next_episode_index(task, HIGH_QUALITY_DIR)
+        low_index = self.controller.peek_next_episode_index(task, LOW_QUALITY_DIR)
+        full_path = (
+            f"{self._fixed_output_root}/{task}/{HIGH_QUALITY_DIR}/{high_index}\n"
+            f"{self._fixed_output_root}/{task}/{LOW_QUALITY_DIR}/{low_index}"
+        )
+        self.next_path_label.setText(
+            f"{self._fixed_output_root}\n"
+            f"{task}/{HIGH_QUALITY_DIR}/{high_index}\n"
+            f"{task}/{LOW_QUALITY_DIR}/{low_index}"
+        )
         self.next_path_label.setToolTip(full_path)
 
     def _refresh_disk(self) -> None:
@@ -820,6 +877,15 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f}{unit}"
         size /= 1024.0
     return f"{size:.1f}TB"
+
+
+def _display_output_path(output_dir: str, output_root: str) -> str:
+    path = Path(output_dir).expanduser()
+    root = Path(output_root).expanduser()
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _is_text_input_widget(widget: Optional[QtWidgets.QWidget]) -> bool:

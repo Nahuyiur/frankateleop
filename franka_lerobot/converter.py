@@ -25,6 +25,8 @@ DEFAULT_CHUNKS_SIZE = 1000
 DEFAULT_DATA_FILE_SIZE_IN_MB = 100
 DEFAULT_VIDEO_FILE_SIZE_IN_MB = 200
 GRIPPER_BINARY_THRESHOLD = GRIPPER_CLOSED_THRESHOLD
+QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality")
+QUALITY_DIR_SET = set(QUALITY_DIR_NAMES)
 STATE_NAMES = [f"joint_{idx}" for idx in range(1, 8)] + ["gripper_closedness"]
 POSE_NAMES = ["x", "y", "z", "rx", "ry", "rz"]
 ACTION_NAMES = [f"ee_{name}" for name in POSE_NAMES] + STATE_NAMES
@@ -97,12 +99,9 @@ def discover_task_episode_paths(task_dir: str | Path) -> tuple[list[Path], list[
     if not task_dir.is_dir():
         raise ConversionError(f"Task directory does not exist: {task_dir}")
 
-    episode_dirs = [path for path in task_dir.iterdir() if path.is_dir()]
-    episode_dirs.sort(key=_episode_sort_key)
-
     valid: list[Path] = []
     skipped: list[Path] = []
-    for episode_dir in episode_dirs:
+    for episode_dir in _iter_task_episode_dirs(task_dir):
         try:
             find_episode_pkl(episode_dir)
         except FileNotFoundError:
@@ -286,6 +285,9 @@ def default_episode_output_root(episode_path: str | Path) -> Path:
     task_name = _infer_task_name_from_episode_path(pkl_path)
     source_index = _parse_source_episode_index(pkl_path)
     suffix = source_index if source_index is not None else pkl_path.stem.replace(".pkl", "")
+    quality = _infer_quality_from_episode_path(pkl_path)
+    if quality:
+        suffix = f"{quality}_{suffix}"
     return Path.home() / "Desktop" / "franka_lerobot_data" / f"{task_name}_episode_{suffix}"
 
 
@@ -751,9 +753,31 @@ def _parse_source_episode_index(pkl_path: Path) -> int | None:
 
 
 def _infer_task_name_from_episode_path(pkl_path: Path) -> str:
+    quality = _infer_quality_from_episode_path(pkl_path)
+    if quality and pkl_path.parent.parent.parent.name:
+        return pkl_path.parent.parent.parent.name
     if pkl_path.parent.parent.name:
         return pkl_path.parent.parent.name
     return "task"
+
+
+def _infer_quality_from_episode_path(pkl_path: Path) -> str | None:
+    quality = pkl_path.parent.parent.name
+    if quality in QUALITY_DIR_SET:
+        return quality
+    return None
+
+
+def _iter_task_episode_dirs(task_dir: Path) -> list[Path]:
+    episode_dirs: list[Path] = []
+    for child in sorted((path for path in task_dir.iterdir() if path.is_dir()), key=_episode_sort_key):
+        if child.name in QUALITY_DIR_SET:
+            episode_dirs.extend(
+                sorted((path for path in child.iterdir() if path.is_dir()), key=_episode_sort_key)
+            )
+        else:
+            episode_dirs.append(child)
+    return episode_dirs
 
 
 def _episode_sort_key(path: Path) -> tuple[int, int | str]:

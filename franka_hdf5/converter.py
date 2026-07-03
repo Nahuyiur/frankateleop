@@ -32,6 +32,8 @@ from franka_lerobot.converter import (
 
 FORMAT_VERSION = "franka_hdf5_v2"
 DEFAULT_COMPRESSION = "gzip"
+QUALITY_DIR_NAMES = ("High_Quality", "Low_Quality")
+QUALITY_DIR_SET = set(QUALITY_DIR_NAMES)
 
 
 @dataclass
@@ -188,6 +190,9 @@ def default_episode_output_file(episode_path: str | Path) -> Path:
     task_name = _infer_task_name_from_episode_path(pkl_path)
     source_index = _parse_source_episode_index(pkl_path)
     suffix = source_index if source_index is not None else pkl_path.name.replace(".pkl.gz", "")
+    quality = _infer_quality_from_episode_path(pkl_path)
+    if quality:
+        suffix = f"{quality}_{suffix}"
     return Path.home() / "Desktop" / "franka_hdf5_data" / f"{task_name}_episode_{suffix}.hdf5"
 
 
@@ -504,9 +509,19 @@ def _parse_source_episode_index(pkl_path: Path) -> int | None:
 
 
 def _infer_task_name_from_episode_path(pkl_path: Path) -> str:
+    quality = _infer_quality_from_episode_path(pkl_path)
+    if quality and pkl_path.parent.parent.parent.name:
+        return pkl_path.parent.parent.parent.name
     if pkl_path.parent.parent.name:
         return pkl_path.parent.parent.name
     return "task"
+
+
+def _infer_quality_from_episode_path(pkl_path: Path) -> str | None:
+    quality = pkl_path.parent.parent.name
+    if quality in QUALITY_DIR_SET:
+        return quality
+    return None
 
 
 def _dependency_message(missing: list[str]) -> str:

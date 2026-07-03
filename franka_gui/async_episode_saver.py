@@ -31,11 +31,16 @@ class EpisodeSaveRequest:
     keyframes: List[int]
     camera_names: List[str]
     video_fps: int
+    quality: str = ""
+    text_instruction: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def output_dir(self) -> Path:
-        return Path(self.output_root).expanduser() / self.task / str(self.index)
+        task_dir = Path(self.output_root).expanduser() / self.task
+        if self.quality:
+            task_dir = task_dir / self.quality
+        return task_dir / str(self.index)
 
 
 class AsyncEpisodeSaver(QtCore.QObject):
@@ -62,7 +67,11 @@ class AsyncEpisodeSaver(QtCore.QObject):
     def enqueue(self, request: EpisodeSaveRequest) -> None:
         self._increment_pending()
         self.save_started.emit(request.task, request.index, str(request.output_dir))
-        future = self._executor.submit(_save_episode, request)
+        try:
+            future = self._executor.submit(_save_episode, request)
+        except Exception:
+            self.queue_changed.emit(self._decrement_pending())
+            raise
         future.add_done_callback(lambda fut: self._handle_done(request, fut))
 
     def shutdown(self) -> None:
@@ -102,6 +111,10 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
     if output_dir.exists():
         raise FileExistsError(f"Episode output directory already exists: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=False)
+    relative_episode_dir = Path(request.task)
+    if request.quality:
+        relative_episode_dir = relative_episode_dir / request.quality
+    relative_episode_dir = relative_episode_dir / str(request.index)
 
     try:
         _write_videos(output_dir, request.camera_names, request.video_fps, request.frames)
@@ -123,9 +136,18 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
                 "video_fps": request.video_fps,
                 "preview_video": preview_metadata,
                 "keyframes": request.keyframes,
+                "relative_episode_dir": relative_episode_dir.as_posix(),
+                "episode_id": relative_episode_dir.as_posix(),
             }
         )
+        text_instruction = request.text_instruction.strip()
+        if text_instruction:
+            metadata["text_instruction"] = text_instruction
+        if request.quality:
+            metadata["quality"] = request.quality
         _write_json(output_dir / "metadata.json", metadata)
+        if text_instruction:
+            _write_text(output_dir / "instruction.txt", text_instruction)
     except Exception:
         if output_dir.exists():
             shutil.rmtree(output_dir, ignore_errors=True)
@@ -247,4 +269,10 @@ def _write_pickle(
 def _write_json(path: Path, payload: Dict[str, Any]) -> None:
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _write_text(path: Path, text: str) -> None:
+    with path.open("w", encoding="utf-8") as f:
+        f.write(text)
         f.write("\n")
