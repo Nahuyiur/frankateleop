@@ -21,5 +21,10 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
 fi
 
 echo ">>> 启动Robot Node ..."
+export FRANKA_ROBOT_NAME="single"
+echo ">>> robot side=$FRANKA_ROBOT_NAME"
+echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
+echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
+echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}"
 python3 "$SCRIPT_PATH" --robot=fr3 --robot_ip=127.0.0.1 "$@"
 #robot_ip是直接连接机器人的主机的IP，如果是本机直连机器人，可以用127.0.0.1代替
