@@ -27,6 +27,11 @@ class PolymetisGripperServer(polymetis_pb2_grpc.GripperServerServicer):
         return polymetis_pb2.Empty()
 
     def GetRobotClientMetadata(self, request, context):
+        if self.metadata is None:
+            context.abort(
+                grpc.StatusCode.UNAVAILABLE,
+                "Gripper robot client has not initialized yet.",
+            )
         return self.metadata
 
     def ControlUpdate(self, request, context):
