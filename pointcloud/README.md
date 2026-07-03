@@ -44,6 +44,10 @@ extrinsic calibration is applied later.
 - `visualize_rgbd_episode.py`: make explanatory RGB-D/point-cloud summary images.
 - `reconstruct_rgbd_episode.py`: export dense PLY, organized depth mesh PLY, and
   rendered reconstruction checks.
+- `calibration/`: ChArUco eye-to-hand calibration tools for solving
+  `T_base_camera_color_optical` and applying it to RGB-D point clouds.
+  It also includes multi-camera world-frame fusion once each camera has a
+  valid calibration result.
 
 ## Useful direct commands
 
@@ -51,4 +55,15 @@ extrinsic calibration is applied later.
 python -m pointcloud.verify_depth_episode /path/to/episode/0
 python -m pointcloud.visualize_rgbd_episode /path/to/episode/0 --camera middle
 python -m pointcloud.reconstruct_rgbd_episode /path/to/episode/0 --camera middle
+python -m pointcloud.calibration.synthetic_handeye_test
+python -m pointcloud.calibration.capture_samples --camera middle
+python -m pointcloud.calibration.fuse_world_pointclouds /path/to/episode/0 --extrinsic middle=/path/to/middle/calibration_result.json
 ```
+
+For calibration, the convenient top-level entrypoint is:
+
+```bash
+bash 20_pointcloud_calibration.sh --help
+```
+
+The detailed Chinese guide lives in `pointcloud/calibration/README.md`.
