@@ -138,20 +138,22 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
-        if self._episode_state == "saving":
-            QtWidgets.QMessageBox.warning(
-                self,
-                "正在后台保存",
-                "当前 episode 正在后台保存。请等待保存完成后再关闭。",
-            )
-            event.ignore()
-            return
         pending_saves = self.controller.saver.pending_count()
         if pending_saves > 0:
             QtWidgets.QMessageBox.warning(
                 self,
                 "仍在后台保存",
                 f"还有 {pending_saves} 个 episode 正在后台保存。请等待保存完成后再关闭。",
+            )
+            event.ignore()
+            return
+        deferred_retries = self.controller.deferred_quality_retry_count()
+        if deferred_retries > 0:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "存在保存失败待处理",
+                f"还有 {deferred_retries} 个保存失败的 episode 待重新分层或丢弃。"
+                "请先处理后再关闭。",
             )
             event.ignore()
             return
@@ -712,7 +714,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status_box.setText("PAUSE")
             self.status_box.setStyleSheet("background: #fefce8; color: #854d0e; border-radius: 8px; font-size: 26px; font-weight: 800;")
         elif state == "saving":
-            self._set_config_controls_enabled(False)
+            self._set_config_controls_enabled(True)
             self._set_quality_controls_enabled(False)
             self.status_box.setText("SAVING")
             self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")

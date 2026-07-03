@@ -497,6 +497,7 @@ class CaptureController(QtCore.QObject):
         self._active_state = "idle"
         self._start_pending = False
         self._pending_quality_request: EpisodeSaveRequest | None = None
+        self._deferred_quality_retry_requests: List[EpisodeSaveRequest] = []
         self._saving_quality_requests: Dict[tuple[str, str, int], EpisodeSaveRequest] = {}
 
         self.saver.queue_changed.connect(self.save_queue_changed)
@@ -556,9 +557,6 @@ class CaptureController(QtCore.QObject):
         if self._active_state in {"finishing", "discarding"}:
             self.status_changed.emit("当前 episode 正在结束或丢弃处理中，请稍等。")
             return
-        if self._active_state == "saving":
-            self.status_changed.emit("当前 episode 正在后台保存，请等待保存完成后再开始下一条。")
-            return
         metadata = dict(user_metadata or {})
         if self._active_state == "paused" and self._active_task is not None:
             self._start_pending = True
@@ -606,6 +604,7 @@ class CaptureController(QtCore.QObject):
             self.status_changed.emit(
                 f"已丢弃待分层 episode: {request.task}, frames={len(request.frames)}"
             )
+            self._maybe_restore_deferred_quality_request()
             return
         if self.thread is not None and self._active_state in {"recording", "paused"}:
             self._active_state = "discarding"
@@ -638,6 +637,9 @@ class CaptureController(QtCore.QObject):
         root = Path(self.options.output_root).expanduser()
         root.mkdir(parents=True, exist_ok=True)
         return shutil.disk_usage(root)
+
+    def deferred_quality_retry_count(self) -> int:
+        return len(self._deferred_quality_retry_requests)
 
     def shutdown(self) -> None:
         self.stop_preview()
@@ -704,6 +706,7 @@ class CaptureController(QtCore.QObject):
         self._active_state = "idle"
         self.active_episode_changed.emit(task, index, "discarded")
         self.status_changed.emit(f"已丢弃: {task}/{index}, frames={frames}")
+        self._maybe_restore_deferred_quality_request()
 
     def _on_save_finished(self, task: str, index: int, output_dir: str, frame_count: int) -> None:
         quality = Path(output_dir).parent.name
@@ -711,8 +714,9 @@ class CaptureController(QtCore.QObject):
             self._saving_quality_requests.pop((task, quality, index), None)
         self.episode_saved.emit(task, index, output_dir, frame_count)
         if self._active_task is None:
-            self._active_state = "idle"
-            self.active_episode_changed.emit(task, index, "saved")
+            if not self._maybe_restore_deferred_quality_request():
+                self._active_state = "idle"
+                self.active_episode_changed.emit(task, index, "saved")
         self.status_changed.emit(f"保存完成: {output_dir}, frames={frame_count}")
 
     def _on_save_failed(self, task: str, index: int, output_dir: str, error: str) -> None:
@@ -721,17 +725,20 @@ class CaptureController(QtCore.QObject):
         if quality in QUALITY_DIRS:
             self._release_reserved(task, index, quality)
             request = self._saving_quality_requests.pop((task, quality, index), None)
-        if request is not None and self._active_task is None:
+        if request is not None:
             request = self._prepare_quality_retry_request(request)
-            self._pending_quality_request = request
-            self._active_task = request.task
-            self._active_index = request.index
-            self._active_state = "quality_pending"
-            self.active_episode_changed.emit(request.task, request.index, "quality_pending")
-            self.status_changed.emit(
-                f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
-                f"{task}/{quality}/{index}"
-            )
+            if self._can_restore_quality_request():
+                self._restore_quality_request(
+                    request,
+                    f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
+                    f"{task}/{quality}/{index}",
+                )
+            else:
+                self._deferred_quality_retry_requests.append(request)
+                self.status_changed.emit(
+                    f"后台保存失败，已暂存待重试 episode；当前采集处理完后会恢复到 JUDGING: "
+                    f"{task}/{quality}/{index}"
+                )
         elif self._active_task is None:
             self._active_state = "idle"
             self.active_episode_changed.emit(task, index, "save_failed")
@@ -776,6 +783,32 @@ class CaptureController(QtCore.QObject):
             self._active_state = "quality_pending"
             self.active_episode_changed.emit(request.task, request.index, "quality_pending")
             self.error.emit(f"提交后台保存失败: {exc}")
+
+    def _can_restore_quality_request(self) -> bool:
+        return (
+            self._active_task is None
+            and self._pending_quality_request is None
+            and self._active_state not in {"recording", "paused", "quality_pending", "finishing", "discarding"}
+        )
+
+    def _restore_quality_request(self, request: EpisodeSaveRequest, message: str) -> None:
+        self._pending_quality_request = request
+        self._active_task = request.task
+        self._active_index = request.index
+        self._active_state = "quality_pending"
+        self.active_episode_changed.emit(request.task, request.index, "quality_pending")
+        self.status_changed.emit(message)
+
+    def _maybe_restore_deferred_quality_request(self) -> bool:
+        if not self._deferred_quality_retry_requests or not self._can_restore_quality_request():
+            return False
+        request = self._deferred_quality_retry_requests.pop(0)
+        self._restore_quality_request(
+            request,
+            f"之前后台保存失败的 episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
+            f"{request.task}/{request.index}",
+        )
+        return True
 
     def _prepare_quality_retry_request(self, request: EpisodeSaveRequest) -> EpisodeSaveRequest:
         metadata = dict(request.metadata)
