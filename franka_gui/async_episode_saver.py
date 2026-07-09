@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import pickle
 import shutil
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +22,26 @@ from franka_capture.recording.episode_writer import _create_video_writers
 
 PREVIEW_VIDEO_STEM = "preview_all"
 PREVIEW_VIDEO_MAX_HEIGHT = 180
+DEFAULT_CACHE_ROOT = Path.home() / "Desktop" / "franka_record_cache"
+CACHE_ROOT_ENV = "FRANKA_GUI_RECORD_CACHE_ROOT"
+PARTIAL_PREFIX = ".partial"
+INVALID_PATH_PARTS = {"", ".", ".."}
+SAVE_ERROR_CACHE_MISSING = "cache_missing"
+SAVE_ERROR_FINAL_CONFLICT = "final_conflict"
+SAVE_ERROR_LOCAL_WRITE_FAILED = "local_write_failed"
+SAVE_ERROR_PUBLISH_FAILED = "publish_failed"
+SAVE_ERROR_UNKNOWN = "unknown"
+
+
+class EpisodeOutputConflictError(FileExistsError):
+    """Raised when the final episode directory has already been claimed."""
+
+
+class EpisodeSaveError(RuntimeError):
+    def __init__(self, message: str, *, kind: str, cache_dir: str = "") -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.cache_dir = cache_dir
 
 
 @dataclass
@@ -34,13 +56,20 @@ class EpisodeSaveRequest:
     quality: str = ""
     text_instruction: str = ""
     metadata: Dict[str, Any] = field(default_factory=dict)
+    local_cache_dir: str = ""
+    publish_from_cache: bool = False
+
+    @property
+    def relative_episode_dir(self) -> Path:
+        task = _validate_path_token(self.task, "task")
+        episode_dir = Path(task)
+        if self.quality:
+            episode_dir = episode_dir / _validate_path_token(self.quality, "quality")
+        return episode_dir / str(self.index)
 
     @property
     def output_dir(self) -> Path:
-        task_dir = Path(self.output_root).expanduser() / self.task
-        if self.quality:
-            task_dir = task_dir / self.quality
-        return task_dir / str(self.index)
+        return Path(self.output_root).expanduser() / self.relative_episode_dir
 
 
 class AsyncEpisodeSaver(QtCore.QObject):
@@ -48,7 +77,7 @@ class AsyncEpisodeSaver(QtCore.QObject):
 
     save_started = QtCore.pyqtSignal(str, int, str)
     save_finished = QtCore.pyqtSignal(str, int, str, int)
-    save_failed = QtCore.pyqtSignal(str, int, str, str)
+    save_failed = QtCore.pyqtSignal(str, int, str, str, str)
     queue_changed = QtCore.pyqtSignal(int)
 
     def __init__(self, max_workers: int = 1, parent: QtCore.QObject | None = None) -> None:
@@ -65,9 +94,10 @@ class AsyncEpisodeSaver(QtCore.QObject):
             del locker
 
     def enqueue(self, request: EpisodeSaveRequest) -> None:
+        output_dir = str(request.output_dir)
         self._increment_pending()
-        self.save_started.emit(request.task, request.index, str(request.output_dir))
         try:
+            self.save_started.emit(request.task, request.index, output_dir)
             future = self._executor.submit(_save_episode, request)
         except Exception:
             self.queue_changed.emit(self._decrement_pending())
@@ -95,27 +125,83 @@ class AsyncEpisodeSaver(QtCore.QObject):
             del locker
 
     def _handle_done(self, request: EpisodeSaveRequest, future) -> None:
+        output_dir = str(request.output_dir)
         try:
-            output_dir, frame_count = future.result()
-        except Exception:
+            saved_output_dir, frame_count = future.result()
+        except Exception as exc:
+            kind = _failure_kind(exc)
             error = traceback.format_exc()
-            self.save_failed.emit(request.task, request.index, str(request.output_dir), error)
+            self.save_failed.emit(request.task, request.index, output_dir, kind, error)
         else:
-            self.save_finished.emit(request.task, request.index, str(output_dir), frame_count)
+            self.save_finished.emit(request.task, request.index, str(saved_output_dir), frame_count)
         finally:
             self.queue_changed.emit(self._decrement_pending())
 
 
 def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
-    output_dir = request.output_dir
-    if output_dir.exists():
-        raise FileExistsError(f"Episode output directory already exists: {output_dir}")
-    output_dir.mkdir(parents=True, exist_ok=False)
-    relative_episode_dir = Path(request.task)
-    if request.quality:
-        relative_episode_dir = relative_episode_dir / request.quality
-    relative_episode_dir = relative_episode_dir / str(request.index)
+    final_output_dir = request.output_dir
 
+    if request.publish_from_cache:
+        if not request.local_cache_dir:
+            raise EpisodeSaveError(
+                "publish_from_cache requires local_cache_dir",
+                kind=SAVE_ERROR_CACHE_MISSING,
+            )
+        staging_output_dir = Path(request.local_cache_dir).expanduser()
+        if not staging_output_dir.is_dir():
+            raise EpisodeSaveError(
+                f"Local episode cache does not exist: {staging_output_dir}",
+                kind=SAVE_ERROR_CACHE_MISSING,
+                cache_dir=str(staging_output_dir),
+            )
+        save_id = uuid.uuid4().hex
+        try:
+            _publish_episode_to_output_root(staging_output_dir, final_output_dir, save_id)
+        except Exception as exc:
+            raise EpisodeSaveError(
+                "Publishing preserved local cache to final output failed. "
+                f"Local cache is still at: {staging_output_dir}",
+                kind=_publish_failure_kind(exc),
+                cache_dir=str(staging_output_dir),
+            ) from exc
+        _remove_cache_session(staging_output_dir, request.relative_episode_dir)
+        return final_output_dir, len(request.frames)
+
+    save_id = uuid.uuid4().hex
+    staging_root = _cache_root() / ".saving" / save_id
+    staging_output_dir = staging_root / request.relative_episode_dir
+
+    try:
+        staging_output_dir.mkdir(parents=True, exist_ok=False)
+        _write_episode_files(staging_output_dir, request, request.relative_episode_dir)
+        request.local_cache_dir = str(staging_output_dir)
+    except Exception as exc:
+        if staging_root.exists():
+            shutil.rmtree(staging_root, ignore_errors=True)
+        raise EpisodeSaveError(
+            "Episode local cache write failed.",
+            kind=SAVE_ERROR_LOCAL_WRITE_FAILED,
+        ) from exc
+
+    try:
+        _publish_episode_to_output_root(staging_output_dir, final_output_dir, save_id)
+    except Exception as exc:
+        raise EpisodeSaveError(
+            "Episode was written to local cache, but publishing to final output "
+            f"failed. Local cache preserved at: {staging_output_dir}",
+            kind=_publish_failure_kind(exc),
+            cache_dir=str(staging_output_dir),
+        ) from exc
+
+    shutil.rmtree(staging_root, ignore_errors=True)
+    return final_output_dir, len(request.frames)
+
+
+def _write_episode_files(
+    output_dir: Path,
+    request: EpisodeSaveRequest,
+    relative_episode_dir: Path,
+) -> None:
     try:
         _write_videos(output_dir, request.camera_names, request.video_fps, request.frames)
         preview_metadata = _write_preview_video(
@@ -153,7 +239,96 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
             shutil.rmtree(output_dir, ignore_errors=True)
         raise
 
-    return output_dir, len(request.frames)
+
+def _publish_episode_to_output_root(
+    staging_output_dir: Path,
+    final_output_dir: Path,
+    save_id: str,
+) -> None:
+    _ensure_publish_mount(final_output_dir)
+    final_parent = final_output_dir.parent
+    final_parent.mkdir(parents=True, exist_ok=True)
+    if final_output_dir.exists():
+        raise EpisodeOutputConflictError(
+            f"Episode output directory already exists: {final_output_dir}"
+        )
+
+    partial_dir = final_parent / f"{PARTIAL_PREFIX}-{final_output_dir.name}-{save_id}"
+    if partial_dir.exists():
+        shutil.rmtree(partial_dir, ignore_errors=True)
+    try:
+        shutil.copytree(staging_output_dir, partial_dir, copy_function=shutil.copy2)
+        if final_output_dir.exists():
+            raise EpisodeOutputConflictError(
+                f"Episode output directory already exists: {final_output_dir}"
+            )
+        partial_dir.rename(final_output_dir)
+    except Exception:
+        if partial_dir.exists():
+            shutil.rmtree(partial_dir, ignore_errors=True)
+        raise
+
+
+def _ensure_publish_mount(final_output_dir: Path) -> None:
+    nas_root = Path.home() / "Desktop" / "Muka_NAS"
+    try:
+        final_output_dir.expanduser().absolute().relative_to(nas_root.absolute())
+    except ValueError:
+        return
+    if not _is_mount_path(nas_root):
+        raise RuntimeError(
+            f"NAS output root is not mounted at {nas_root}; local cache will be kept."
+        )
+
+
+def _is_mount_path(path: Path) -> bool:
+    target = path.expanduser().absolute().as_posix()
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return path.is_mount()
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 5 and parts[4].replace("\\040", " ") == target:
+            return True
+    return False
+
+
+def _publish_failure_kind(exc: Exception) -> str:
+    if isinstance(exc, EpisodeOutputConflictError):
+        return SAVE_ERROR_FINAL_CONFLICT
+    return SAVE_ERROR_PUBLISH_FAILED
+
+
+def _failure_kind(exc: Exception) -> str:
+    if isinstance(exc, EpisodeSaveError):
+        return exc.kind
+    if isinstance(exc, EpisodeOutputConflictError):
+        return SAVE_ERROR_FINAL_CONFLICT
+    if isinstance(exc, FileNotFoundError):
+        return SAVE_ERROR_CACHE_MISSING
+    return SAVE_ERROR_UNKNOWN
+
+
+def _cache_root() -> Path:
+    configured = os.environ.get(CACHE_ROOT_ENV, "").strip()
+    root = Path(configured).expanduser() if configured else DEFAULT_CACHE_ROOT
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _validate_path_token(value: str, label: str) -> str:
+    token = str(value).strip()
+    if token in INVALID_PATH_PARTS or "/" in token or "\\" in token or "\x00" in token:
+        raise ValueError(f"Invalid {label} path token: {value!r}")
+    return token
+
+
+def _remove_cache_session(staging_output_dir: Path, relative_episode_dir: Path) -> None:
+    session_dir = staging_output_dir
+    for _ in relative_episode_dir.parts:
+        session_dir = session_dir.parent
+    shutil.rmtree(session_dir, ignore_errors=True)
 
 
 def _write_videos(

@@ -39,6 +39,8 @@ REMOTE_LOG_DIR="${BI_ARM_REMOTE_LOG_DIR:-$RIGHT_REPO/logs/bi_arm_pipeline/$RUN_I
 SYNC_REMOTE_RIGHT_SCRIPTS="${BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS:-1}"
 STACK_ONLY="${BI_ARM_STACK_ONLY:-0}"
 RIGHT_ONLY="${BI_ARM_RIGHT_ONLY:-0}"
+MUKA_NAS_ROOT="$HOME/Desktop/Muka_NAS"
+DEFAULT_OUTPUT_ROOT="$MUKA_NAS_ROOT"
 
 LOCAL_PIDS=()
 LOCAL_NAMES=()
@@ -60,7 +62,7 @@ Usage:
 
 Examples:
   bash 15_record_bi_arm_pipeline.sh pick_block
-  bash 15_record_bi_arm_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data
+  bash 15_record_bi_arm_pipeline.sh pick_block /home/pnp/Desktop/Muka_NAS
 
 Recording keys:
   s=start/resume, w=pause, e=save current episode, d=discard current episode,
@@ -462,6 +464,17 @@ abort() {
     [[ -n "$logfile" ]] && tail_log "$logfile"
     cleanup_all
     exit 1
+}
+
+require_muka_nas_mounted() {
+    local output_root="$1"
+    case "$output_root" in
+        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
+            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
+                abort "NAS is not mounted at $MUKA_NAS_ROOT. Mount Muka_NAS before recording."
+            fi
+            ;;
+    esac
 }
 
 abort_remote() {
@@ -919,7 +932,7 @@ main() {
     mkdir -p "$LOG_DIR"
 
     local task="$1"
-    local output_root="$HOME/Desktop/franka_record_data"
+    local output_root="$DEFAULT_OUTPUT_ROOT"
     local extra_args=()
     if [[ "$#" -ge 2 && "${2:0:2}" != "--" ]]; then
         output_root="$2"
@@ -930,6 +943,7 @@ main() {
         extra_args=("${@:2}")
     fi
 
+    require_muka_nas_mounted "$output_root"
     mkdir -p "$output_root"
 
     log "Repo: $REPO_ROOT"

@@ -26,11 +26,11 @@ def parse_args() -> argparse.Namespace:
         "episode_dir",
         nargs="?",
         default=None,
-        help="Episode directory, e.g. /home/pnp/Desktop/franka_record_data/pick_block/0",
+        help="Episode directory, e.g. /home/pnp/Desktop/Muka_NAS/pick_block/0",
     )
     parser.add_argument(
         "--output-root",
-        default=str(Path.home() / "Desktop" / "franka_record_data"),
+        default=str(Path.home() / "Desktop" / "Muka_NAS"),
         help="Default recording root used when episode_dir is omitted.",
     )
     parser.add_argument(

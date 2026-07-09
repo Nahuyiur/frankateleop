@@ -51,16 +51,22 @@ ENABLE_CLEANUP=0
 usage() {
     cat <<EOF
 Usage:
-  bash 16_replay_bi_arm_pipeline.sh <dual-arm episode dir or pkl.gz> [replay args...]
+  bash 16_replay_bi_arm_pipeline.sh <dual-arm episode dir, metadata.json, or pkl.gz> [replay args...]
 
 Examples:
-  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/4
-  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/4 --execute
-  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/4 --execute --speed 0.5
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality --latest
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --skip-robot-check
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --execute
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --execute --speed 0.5
 
 Default mode is dry-run: it starts/checks both robot nodes but sends no replay
-trajectory unless --execute is passed.
+trajectory unless --execute is passed. If DEFAULT_APPROACH_START=1 and the
+start delta is within DEFAULT_APPROACH_START_MAX_DELTA, dry-run reports that
+execute mode can auto-approach frame 0 instead of failing.
 
+--skip-robot-check only validates the episode file and exits before sudo, SSH,
+port cleanup, or hardware stack startup.
 Environment:
   BI_ARM_RIGHT_SSH=192.168.1.131
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
@@ -78,10 +84,14 @@ Environment:
   BI_ARM_RIGHT_ROBOTIQ_COMPORT=
   DEFAULT_GRIPPER_REPLAY_MODE=event
   DEFAULT_GRIPPER_COMMAND_HZ=15.0
+  DEFAULT_APPROACH_START=1
+  DEFAULT_APPROACH_START_MAX_DELTA=0.75
 
 This script starts local left_franka/1-3, starts remote right_franka/1-3
 through SSH, opens SSH tunnels for right ZMQ and right gripper gRPC, then runs
 the dual-arm replay on this host. It intentionally does not start 4_run_env.sh.
+The replay resolver accepts the current task/High_Quality|Low_Quality|Failure/index
+layout, the old task/index layout, metadata.json, or the exact .pkl.gz file.
 EOF
 }
 
@@ -98,6 +108,20 @@ is_truthy() {
         1|true|yes|on) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+resolve_conda_base() {
+    if command -v conda >/dev/null 2>&1; then
+        conda info --base
+    elif [[ -x "$HOME/miniconda3/bin/conda" ]]; then
+        printf '%s\n' "$HOME/miniconda3"
+    elif [[ -x "/home/pnp/miniconda3/bin/conda" ]]; then
+        printf '%s\n' "/home/pnp/miniconda3"
+    elif [[ -x "$HOME/anaconda3/bin/conda" ]]; then
+        printf '%s\n' "$HOME/anaconda3"
+    else
+        return 1
+    fi
 }
 
 process_alive() {
@@ -712,15 +736,7 @@ run_replay() {
     (
         cd "$REPO_ROOT"
         export PYTHONUNBUFFERED=1
-        if command -v conda >/dev/null 2>&1; then
-            CONDA_BASE="$(conda info --base)"
-        elif [[ -x "$HOME/miniconda3/bin/conda" ]]; then
-            CONDA_BASE="$HOME/miniconda3"
-        elif [[ -x "/home/pnp/miniconda3/bin/conda" ]]; then
-            CONDA_BASE="/home/pnp/miniconda3"
-        elif [[ -x "$HOME/anaconda3/bin/conda" ]]; then
-            CONDA_BASE="$HOME/anaconda3"
-        else
+        if ! CONDA_BASE="$(resolve_conda_base)"; then
             echo "ERROR: conda not found" >&2
             exit 1
         fi
@@ -757,6 +773,59 @@ run_replay() {
     log "dual-arm replay exited normally."
 }
 
+preflight_dual_episode() {
+    local episode="$1"
+    shift
+
+    log "Preflight checking dual-arm episode format before starting hardware stack."
+    set +e
+    (
+        cd "$REPO_ROOT"
+        export PYTHONUNBUFFERED=1
+        if ! CONDA_BASE="$(resolve_conda_base)"; then
+            echo "ERROR: conda not found" >&2
+            exit 1
+        fi
+        set +u
+        source "$CONDA_BASE/etc/profile.d/conda.sh"
+        conda activate polymetis
+        set -u
+        python - "$episode" "$@" <<'PY'
+import argparse
+
+from franka_replay.replay_fr3 import (
+    infer_episode_kind,
+    load_episode,
+    load_episode_metadata,
+    resolve_episode_file,
+)
+
+parser = argparse.ArgumentParser(add_help=False)
+parser.add_argument("episode")
+parser.add_argument("--latest", action="store_true")
+args, _ = parser.parse_known_args()
+
+episode_path = resolve_episode_file(args.episode, latest=args.latest)
+_, frames = load_episode(episode_path)
+metadata = load_episode_metadata(episode_path)
+kind = infer_episode_kind(frames, metadata)
+if kind != "dual":
+    raise SystemExit(
+        f"Episode appears to be {kind}; use 7_replay_fr3.sh for single-arm replay."
+    )
+first_frame = frames[0] if isinstance(frames[0], dict) else {}
+schema = metadata.get("schema_version") or first_frame.get("schema_version", "<missing>")
+print(f"Preflight OK: {episode_path} schema={schema} frames={len(frames)}")
+PY
+    )
+    local rc="$?"
+    set -e
+
+    if ((rc != 0)); then
+        abort "dual-arm episode preflight failed with code $rc."
+    fi
+}
+
 main() {
     require_args "$@"
     ENABLE_CLEANUP=1
@@ -766,6 +835,20 @@ main() {
     local extra_args=()
     if [[ "$#" -gt 1 ]]; then
         extra_args=("${@:2}")
+    fi
+
+    local skip_robot_check=0
+    local execute_replay=0
+    local arg
+    for arg in "${extra_args[@]}"; do
+        case "$arg" in
+            --skip-robot-check) skip_robot_check=1 ;;
+            --execute) execute_replay=1 ;;
+        esac
+    done
+    if ((skip_robot_check == 1 && execute_replay == 1)); then
+        log "ERROR: --skip-robot-check cannot be used with --execute"
+        exit 1
     fi
 
     log "Repo: $REPO_ROOT"
@@ -781,6 +864,11 @@ main() {
     log "Right local gripper tunnel port: $RIGHT_LOCAL_GRIPPER_PORT"
 
     setup_ssh_askpass
+    preflight_dual_episode "$episode" "${extra_args[@]}"
+    if ((skip_robot_check == 1)); then
+        log "Robot check skipped. No command was sent."
+        exit 0
+    fi
     prepare_sudo
     prepare_remote
     sync_remote_right_scripts

@@ -39,6 +39,14 @@ def parse_args():
     parser.add_argument("--left-port", type=int, default=DEFAULT_LEFT_ROBOT.port)
     parser.add_argument("--right-host", default=DEFAULT_RIGHT_ROBOT.host)
     parser.add_argument("--right-port", type=int, default=DEFAULT_RIGHT_ROBOT.port)
+    parser.add_argument(
+        "--profile-key",
+        default="",
+        help=(
+            "Name used to persist GUI form inputs. Empty defaults to --mode. "
+            "Launch scripts set this so A/B/C GUIs keep separate drafts."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -58,7 +66,7 @@ def main() -> int:
         robot_port = args.right_port
 
     options = CaptureOptions(
-        output_root=str(Path.home() / "Desktop" / "franka_record_data"),
+        output_root=str(Path.home() / "Desktop" / "Muka_NAS"),
         mode=args.mode,
         camera_names=camera_names,
         camera_fps=FIXED_CAPTURE_FPS,
@@ -83,7 +91,12 @@ def main() -> int:
     app.setApplicationName(app_names[args.mode])
     controller = CaptureController(options)
     process_manager = ProcessManager(repo_root, mode=args.mode)
-    window = MainWindow(controller, process_manager, repo_root)
+    window = MainWindow(
+        controller,
+        process_manager,
+        repo_root,
+        profile_key=args.profile_key or args.mode,
+    )
     window.show()
     return app.exec()
 

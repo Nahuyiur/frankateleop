@@ -68,6 +68,35 @@ class ProcessManager(QtCore.QObject):
     def stop_stack_blocking(self) -> None:
         self._stop_stack_worker(False)
 
+    def is_stack_running(self) -> bool:
+        labels = {
+            "single": ("1_launch_robot", "2_launch_gripper", "3_launch_node", "4_run_env"),
+            "right": ("15_right_arm_stack",),
+            "dual": ("15_bi_arm_stack",),
+        }[self.mode]
+        return any(self._is_managed_running(label) for label in labels)
+
+    def prepare_for_replay(self, target: str, run_mode: str) -> None:
+        if run_mode == "file_check":
+            return
+        if self.mode == "single":
+            if self._is_managed_running("4_run_env"):
+                self._emit_log("Replay 前停止本机 4_run_env，保留 1-3 robot/node 栈。")
+                self._stop_one("4_run_env")
+            return
+        if self.mode == "dual":
+            if self.is_stack_running():
+                self._emit_log("Replay 前停止当前 GUI 双臂 1-4 栈；16 replay 脚本会重新启动 1-3。")
+                self._stop_stack_worker(True)
+            return
+        if self.mode == "right" and run_mode == "execute" and self.is_stack_running():
+            raise RuntimeError(
+                "右臂 GUI 当前 1-4 栈仍在运行，里面包含远端 4_run_env。"
+                "为避免 teleop 和 replay 同时控制右臂，GUI 暂不直接执行右臂 replay。"
+                "请先用文件检查或硬件 dry-run；真正执行前需要停止远端 4_run_env，"
+                "但保留右臂 1-3 robot/node 栈。"
+            )
+
     def stop_teleop_env(self) -> None:
         if self.mode in {"right", "dual"}:
             label = "右臂" if self.mode == "right" else "双臂"
@@ -186,13 +215,18 @@ class ProcessManager(QtCore.QObject):
         script_path = self.repo_root / script_name
         self._emit_log(f"启动 {script_name} ...")
         log = log_path.open("ab")
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        gui_password = _read_sudo_password()
+        if gui_password and not env.get("FRANKA_SUDO_PASSWORD"):
+            env["FRANKA_SUDO_PASSWORD"] = gui_password
+            self._emit_log(f"{script_name} 已使用 GUI 私有密码配置传递 sudo 凭据")
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path)],
                 cwd=self.repo_root,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+                env=env,
             )
         finally:
             log.close()
@@ -317,6 +351,10 @@ class ProcessManager(QtCore.QObject):
     def _get_managed(self, label: str) -> Optional[ManagedProcess]:
         with self._lock:
             return self._processes.get(label)
+
+    def _is_managed_running(self, label: str) -> bool:
+        managed = self._get_managed(label)
+        return managed is not None and managed.process.poll() is None
 
     def _wait_until_ready(
         self,

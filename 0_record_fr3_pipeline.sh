@@ -22,7 +22,7 @@ Usage:
 
 Examples:
   bash 0_record_fr3_pipeline.sh pick_block
-  bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/franka_record_data --timeout-ms 3000
+  bash 0_record_fr3_pipeline.sh pick_block /home/pnp/Desktop/Muka_NAS --timeout-ms 3000
   bash 0_record_fr3_pipeline.sh pick_block --depth-cameras middle,left_wrist
   bash 0_record_fr3_pipeline.sh pick_block --no-depth
 

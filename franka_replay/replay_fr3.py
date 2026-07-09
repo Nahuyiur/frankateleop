@@ -2,6 +2,7 @@
 
 import argparse
 import gzip
+import json
 import pickle
 import sys
 import time
@@ -169,11 +170,25 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "episode",
-        help="Episode directory such as /home/pnp/Desktop/franka_record_data/pick_block/3, or a .pkl.gz file.",
+        help=(
+            "Episode directory, metadata.json, or .pkl.gz file. Supports old "
+            "task/index and current task/Quality/index layouts."
+        ),
     )
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=6001)
+    parser.add_argument("--host", default=None)
+    parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--timeout-ms", type=int, default=2000)
+    parser.add_argument(
+        "--arm",
+        choices=("auto", "left", "right"),
+        default="auto",
+        help="Single-arm side. auto uses metadata arm_side when available.",
+    )
+    parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="If the input is a task or quality directory containing multiple episodes, replay the newest one.",
+    )
     parser.add_argument(
         "--execute",
         action="store_true",
@@ -234,13 +249,13 @@ def parse_args():
     )
     parser.add_argument(
         "--gripper-host",
-        default="127.0.0.1",
+        default=None,
         help="Host for the gripper gRPC server launched by 2_launch_gripper.sh.",
     )
     parser.add_argument(
         "--gripper-port",
         type=int,
-        default=50052,
+        default=None,
         help="Port for the gripper gRPC server launched by 2_launch_gripper.sh.",
     )
     parser.add_argument(
@@ -275,40 +290,122 @@ def parse_args():
     return parser.parse_args()
 
 
-def resolve_episode_file(path_like: str) -> Path:
+def resolve_episode_file(path_like: str, *, latest: bool = False) -> Path:
     path = Path(path_like).expanduser()
     if path.is_file():
         if path.name.endswith(".pkl.gz"):
             return path
+        if path.name in {"metadata.json", "keyframes.json", "instruction.txt"}:
+            return resolve_episode_file(str(path.parent), latest=latest)
         raise ValueError(f"Replay input file must end with .pkl.gz: {path}")
     if not path.is_dir():
         raise FileNotFoundError(f"Episode path does not exist: {path}")
 
-    preferred = path / f"{path.name}.pkl.gz"
-    if preferred.exists():
-        return preferred
+    direct = _resolve_episode_dir(path)
+    if direct is not None:
+        return direct
 
-    candidates = sorted(path.glob("*.pkl.gz"))
+    candidates = _discover_episode_files(path)
     if len(candidates) == 1:
         return candidates[0]
     if not candidates:
-        raise FileNotFoundError(f"No .pkl.gz file found in episode directory: {path}")
+        raise FileNotFoundError(
+            f"No .pkl.gz file found under replay input: {path}. "
+            "Pass an episode directory such as task/High_Quality/0, metadata.json, "
+            "or use --latest on a task/quality directory."
+        )
+    if latest:
+        return max(candidates, key=lambda candidate: candidate.stat().st_mtime)
     raise RuntimeError(
-        f"Multiple .pkl.gz files found in {path}; pass the exact file path instead."
+        f"Multiple .pkl.gz files found under {path}; pass the exact episode path "
+        "or add --latest. Candidates include:\n"
+        + "\n".join(f"  {candidate}" for candidate in candidates[:12])
     )
+
+
+def _resolve_episode_dir(path: Path) -> Optional[Path]:
+    preferred = path / f"{path.name}.pkl.gz"
+    if preferred.exists():
+        return preferred
+    candidates = sorted(path.glob("*.pkl.gz"))
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _discover_episode_files(path: Path) -> List[Path]:
+    candidates: Dict[Path, None] = {}
+    for pattern in ("*.pkl.gz", "*/*.pkl.gz", "*/*/*.pkl.gz"):
+        for candidate in path.glob(pattern):
+            if candidate.is_file():
+                candidates[candidate] = None
+    return sorted(candidates)
 
 
 def load_episode(path: Path):
     with gzip.open(path, "rb") as f:
         payload = pickle.load(f)
 
-    if not isinstance(payload, dict) or "data" not in payload:
-        raise ValueError(f"Invalid episode payload in {path}: expected dict with data")
+    if not isinstance(payload, dict):
+        raise ValueError(f"Invalid episode payload in {path}: expected dict")
 
-    frames = payload["data"]
+    frames = payload.get("data")
+    if frames is None:
+        frames = payload.get("frames")
+    if frames is None:
+        raise ValueError(f"Invalid episode payload in {path}: expected data or frames")
     if not frames:
         raise ValueError(f"Episode has no frames: {path}")
     return payload, frames
+
+
+def load_episode_metadata(episode_path: Path) -> Dict[str, Any]:
+    metadata_path = episode_path.parent / "metadata.json"
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def infer_episode_kind(frames, metadata: Dict[str, Any]) -> str:
+    first_frame = frames[0] if isinstance(frames[0], dict) else {}
+    schema = str(metadata.get("schema_version", "") or first_frame.get("schema_version", ""))
+    if schema.startswith("franka_dual"):
+        return "dual"
+    for frame in frames[:20]:
+        if not isinstance(frame, dict):
+            continue
+        if "left_joint" in frame and "right_joint" in frame:
+            return "dual"
+        if "joint" in frame:
+            return "single"
+    raise ValueError("Could not infer replay kind from episode frame fields")
+
+
+def infer_single_arm_side(args, metadata: Dict[str, Any]) -> str:
+    if args.arm != "auto":
+        return args.arm
+    arm_side = str(metadata.get("arm_side", "") or "").strip().lower()
+    if arm_side in {"left", "right"}:
+        return arm_side
+    return "left"
+
+
+def apply_single_endpoint_defaults(args, metadata: Dict[str, Any], arm_side: str) -> None:
+    robot_metadata = metadata.get("robot") if isinstance(metadata.get("robot"), dict) else {}
+    metadata_host = robot_metadata.get("host")
+    metadata_port = robot_metadata.get("port")
+
+    if args.host is None:
+        args.host = str(metadata_host or "127.0.0.1")
+    if args.port is None:
+        args.port = int(metadata_port or 6001)
+
+    if args.gripper_host is None:
+        args.gripper_host = args.host if arm_side == "right" else "127.0.0.1"
+    if args.gripper_port is None:
+        args.gripper_port = 50053 if arm_side == "right" else 50052
 
 
 def extract_trajectory(frames):
@@ -417,6 +514,8 @@ def extract_gripper_events(
 def print_episode_summary(
     episode_path,
     payload,
+    metadata,
+    arm_side,
     joints,
     gripper_widths,
     timestamps,
@@ -426,6 +525,8 @@ def print_episode_summary(
     avg_fps = float((len(timestamps) - 1) / duration) if duration > 0 else 0.0
 
     print(f"Episode: {episode_path}")
+    print(f"Metadata schema: {metadata.get('schema_version', '<missing>')}")
+    print(f"Inferred arm side: {arm_side}")
     print(f"Frames: {len(timestamps)}")
     print(f"Duration: {duration:.3f} s")
     print(f"Average capture FPS: {avg_fps:.3f}")
@@ -477,6 +578,40 @@ def check_robot_start(client, commands):
         "current_width": current_width,
         "target_width": target_width,
     }
+
+
+def check_start_delta_policy(args, start_info) -> bool:
+    max_delta = float(start_info["max_delta"])
+    if max_delta <= args.max_start_delta:
+        return False
+
+    if not args.approach_start:
+        hint = (
+            "Pass --approach-start to slowly move to frame 0 first."
+            if args.execute
+            else "Move the robot close to frame 0 first, or enable --approach-start."
+        )
+        raise RuntimeError(
+            f"Start joint max delta {max_delta:.6f} exceeds --max-start-delta "
+            f"{args.max_start_delta:.6f}. {hint}"
+        )
+
+    if max_delta > args.approach_start_max_delta:
+        raise RuntimeError(
+            f"Start joint max delta {max_delta:.6f} exceeds "
+            f"--approach-start-max-delta {args.approach_start_max_delta:.6f}. "
+            "Move the robot closer to frame 0 first."
+        )
+
+    if not args.execute:
+        print(
+            "Start joint max delta exceeds --max-start-delta, but is within "
+            "--approach-start-max-delta. Dry-run passes because --execute "
+            "--approach-start would slowly move to frame 0 before replay."
+        )
+        return False
+
+    return True
 
 
 def approach_start_frame(
@@ -627,22 +762,42 @@ def main():
     if args.approach_start_hz <= 0:
         raise ValueError("--approach-start-hz must be positive")
 
-    episode_path = resolve_episode_file(args.episode)
-    payload, frames = load_episode(episode_path)
-    joints, gripper_widths, timestamps, commands = extract_trajectory(frames)
-    gripper_events = extract_gripper_events(
-        gripper_widths,
-        timestamps,
-        args.gripper_event_delta,
-    )
-    print_episode_summary(
-        episode_path,
-        payload,
-        joints,
-        gripper_widths,
-        timestamps,
-        gripper_events,
-    )
+    try:
+        episode_path = resolve_episode_file(args.episode, latest=args.latest)
+        payload, frames = load_episode(episode_path)
+        metadata = load_episode_metadata(episode_path)
+        episode_kind = infer_episode_kind(frames, metadata)
+        if episode_kind != "single":
+            raise ValueError(
+                f"Episode appears to be {episode_kind}; use 16_replay_bi_arm_pipeline.sh "
+                "or python -m franka_replay.replay_fr3_dual for dual-arm replay."
+            )
+        arm_side = infer_single_arm_side(args, metadata)
+        apply_single_endpoint_defaults(args, metadata, arm_side)
+        joints, gripper_widths, timestamps, commands = extract_trajectory(frames)
+        gripper_events = extract_gripper_events(
+            gripper_widths,
+            timestamps,
+            args.gripper_event_delta,
+        )
+        print_episode_summary(
+            episode_path,
+            payload,
+            metadata,
+            arm_side,
+            joints,
+            gripper_widths,
+            timestamps,
+            gripper_events,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError, KeyError) as exc:
+        print(f"Replay check failed: {exc}")
+        print(
+            "No command was sent. Pass an exact episode directory, metadata.json, "
+            "or .pkl.gz file; use --latest only when intentionally selecting the "
+            "newest episode."
+        )
+        raise SystemExit(1)
 
     if args.skip_robot_check:
         print("Robot check skipped. No command was sent.")
@@ -651,27 +806,8 @@ def main():
     try:
         with RobotZMQReplayClient(args.host, args.port, args.timeout_ms) as client:
             start_info = check_robot_start(client, commands)
-            if start_info["max_delta"] > args.max_start_delta:
-                if not args.execute:
-                    raise RuntimeError(
-                        f"Start joint max delta {start_info['max_delta']:.6f} "
-                        f"exceeds --max-start-delta {args.max_start_delta:.6f}. "
-                        "Move the robot close to frame 0 first, or run with "
-                        "--execute --approach-start to auto-approach."
-                    )
-                if not args.approach_start:
-                    raise RuntimeError(
-                        f"Start joint max delta {start_info['max_delta']:.6f} "
-                        f"exceeds --max-start-delta {args.max_start_delta:.6f}. "
-                        "Pass --approach-start to slowly move to frame 0 first."
-                    )
-                if start_info["max_delta"] > args.approach_start_max_delta:
-                    raise RuntimeError(
-                        f"Start joint max delta {start_info['max_delta']:.6f} exceeds "
-                        f"--approach-start-max-delta "
-                        f"{args.approach_start_max_delta:.6f}. "
-                        "Move the robot closer to frame 0 first."
-                    )
+            should_approach = check_start_delta_policy(args, start_info)
+            if should_approach:
                 approach_start_frame(
                     client,
                     start_info,
@@ -711,7 +847,7 @@ def main():
     except KeyboardInterrupt:
         print("\nReplay interrupted by user.")
         raise SystemExit(130)
-    except (TimeoutError, RuntimeError, ValueError, KeyError) as exc:
+    except (TimeoutError, RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
         print(f"Replay check failed: {exc}")
         if not args.execute:
             print(

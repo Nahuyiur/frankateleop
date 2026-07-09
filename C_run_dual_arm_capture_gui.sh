@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-DEFAULT_OUTPUT_ROOT="$HOME/Desktop/franka_record_data"
+MUKA_NAS_ROOT="$HOME/Desktop/Muka_NAS"
+DEFAULT_OUTPUT_ROOT="$MUKA_NAS_ROOT"
 DEFAULT_SUDO_PASSWORD_FILE="$HOME/.franka_gui_sudo_password"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
 
@@ -19,6 +20,18 @@ source_conda() {
         exit 1
     fi
     source "$CONDA_BASE/etc/profile.d/conda.sh"
+}
+
+require_muka_nas_mounted() {
+    local output_root="$1"
+    case "$output_root" in
+        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
+            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
+                echo "❌ 错误：NAS 未挂载到 $MUKA_NAS_ROOT，请先挂载 Muka_NAS。" >&2
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 if [[ -z "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" && -f "$DEFAULT_SUDO_PASSWORD_FILE" ]]; then
@@ -67,6 +80,8 @@ C 双臂/双臂联动 GUI 会优先尝试全部配置相机:
 EOF
     exit 0
 fi
+
+require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
 
 echo ">>> 激活 conda 环境 franka_capture ..."
 source_conda
@@ -128,6 +143,7 @@ fi
 cd "$REPO_ROOT"
 python -m franka_gui.app \
     --mode dual \
+    --profile-key dual \
     --left-port "$BI_ARM_LEFT_ZMQ_PORT" \
     --right-host "$FRANKA_RIGHT_ZMQ_HOST" \
     --right-port "$FRANKA_RIGHT_ZMQ_PORT" \

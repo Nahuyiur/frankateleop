@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONDA_ENV="${FRANKA_CAPTURE_CONDA_ENV:-franka_capture}"
-DEFAULT_OUTPUT_ROOT="$HOME/Desktop/franka_record_data"
+MUKA_NAS_ROOT="$HOME/Desktop/Muka_NAS"
+DEFAULT_OUTPUT_ROOT="$MUKA_NAS_ROOT"
 DEFAULT_TASK="rgb_pointcloud"
 
 source_conda() {
@@ -21,6 +22,18 @@ source_conda() {
     fi
     # shellcheck source=/dev/null
     source "$CONDA_BASE/etc/profile.d/conda.sh"
+}
+
+require_muka_nas_mounted() {
+    local output_root="$1"
+    case "$output_root" in
+        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
+            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
+                echo "error: NAS is not mounted at $MUKA_NAS_ROOT. Mount Muka_NAS before recording." >&2
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
@@ -65,6 +78,7 @@ conda activate "$CONDA_ENV" || {
     exit 1
 }
 
+require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
 mkdir -p "$DEFAULT_OUTPUT_ROOT"
 
 echo ">>> Camera-only RGB-D recording"

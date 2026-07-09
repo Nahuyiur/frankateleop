@@ -20,7 +20,7 @@ from pointcloud.depth_proof import (
 from franka_capture.recording.episode_writer import EpisodeWriter
 from franka_capture.recording.preview import concatenate_rgb_images, show_rgb_preview
 
-DEFAULT_OUTPUT_ROOT = str(Path.home() / "Desktop" / "franka_record_data")
+DEFAULT_OUTPUT_ROOT = str(Path.home() / "Desktop" / "Muka_NAS")
 DEFAULT_TASK = "rgb_pointcloud"
 FIXED_RECORDING_FPS = 30
 
@@ -91,6 +91,13 @@ def _next_episode_index(output_root: str, task: str, start_index: Optional[int])
     return next_index
 
 
+def _require_muka_nas_if_needed(output_root: Path) -> None:
+    nas_root = Path.home() / "Desktop" / "Muka_NAS"
+    if output_root == nas_root or nas_root in output_root.parents:
+        if not nas_root.is_mount():
+            raise RuntimeError(f"NAS is not mounted at {nas_root}; mount Muka_NAS before recording.")
+
+
 def _resolve_names(spec: str, available_names: list[str], label: str) -> list[str]:
     spec = (spec or "all").strip()
     if spec in {"all", "*"}:
@@ -134,7 +141,9 @@ def main() -> None:
             _resolve_names(args.depth_cameras, camera_names, "depth camera name(s)")
         )
 
-    output_root = str(Path(args.output_root).expanduser())
+    output_root_path = Path(args.output_root).expanduser()
+    _require_muka_nas_if_needed(output_root_path)
+    output_root = str(output_root_path)
     next_index = _next_episode_index(output_root, args.task, args.index)
 
     cameras = {}

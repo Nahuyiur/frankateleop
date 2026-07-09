@@ -28,7 +28,7 @@ from .targets import normalize_board_config
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--camera", default="middle")
-    parser.add_argument("--output-root", default=str(Path.home() / "Desktop" / "franka_record_data" / "calibration"))
+    parser.add_argument("--output-root", default=str(Path.home() / "Desktop" / "Muka_NAS" / "calibration"))
     parser.add_argument("--robot-host", default="127.0.0.1")
     parser.add_argument("--robot-port", type=int, default=6001)
     parser.add_argument("--camera-fps", type=int, default=30)
@@ -41,6 +41,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--square-length-m", type=float, default=None)
     parser.add_argument("--marker-length-m", type=float, default=None)
     return parser.parse_args()
+
+
+def _require_muka_nas_if_needed(output_root: Path) -> None:
+    nas_root = Path.home() / "Desktop" / "Muka_NAS"
+    if output_root == nas_root or nas_root in output_root.parents:
+        if not nas_root.is_mount():
+            raise RuntimeError(f"NAS is not mounted at {nas_root}; mount Muka_NAS before capturing samples.")
 
 
 def _camera_config(camera_name: str, fps: int, width: int, height: int):
@@ -136,7 +143,9 @@ def main() -> None:
         square_length_m=args.square_length_m,
         marker_length_m=args.marker_length_m,
     )
-    session_dir = create_session_dir(Path(args.output_root).expanduser(), args.camera)
+    output_root = Path(args.output_root).expanduser()
+    _require_muka_nas_if_needed(output_root)
+    session_dir = create_session_dir(output_root, args.camera)
     cameras = create_realsense_cameras(_camera_config(args.camera, args.camera_fps, args.width, args.height))
     camera = cameras[args.camera]
     robot: Optional[RobotZMQClient] = None

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
@@ -17,6 +21,29 @@ from .capture_controller import (
     CaptureController,
 )
 from .process_manager import ProcessManager
+from .replay_launcher import (
+    ReplayEpisodeInfo,
+    inspect_replay_input,
+    validate_replay_target,
+)
+
+
+@dataclass(frozen=True)
+class ReplayLaunchOptions:
+    path: str
+    latest: bool
+    run_mode: str
+    speed: float
+    gripper_speed: float
+    gripper_force: float
+    gripper_event_delta: float
+    gripper_replay_mode: str
+    gripper_command_hz: float
+    gripper_hold_sec: float
+    approach_start: bool
+    approach_start_max_delta: float
+    approach_start_step_delta: float
+    approach_start_hz: float
 
 
 class CameraView(QtWidgets.QFrame):
@@ -79,21 +106,40 @@ class AccentBar(QtWidgets.QFrame):
 
 
 class MainWindow(QtWidgets.QMainWindow):
+    _tasks_loaded = QtCore.pyqtSignal(list, str)
+    _disk_loaded = QtCore.pyqtSignal(object)
+    _next_indices_loaded = QtCore.pyqtSignal(str, dict)
+
     def __init__(
         self,
         controller: CaptureController,
         process_manager: ProcessManager,
         repo_root: Path,
+        profile_key: str = "",
         parent=None,
     ) -> None:
         super().__init__(parent)
         self.controller = controller
         self.process_manager = process_manager
         self.repo_root = repo_root
+        self.profile_key = _safe_profile_key(profile_key or self.controller.options.mode)
+        self._form_state_path = _form_state_path(self.profile_key)
+        self._loading_form_state = False
         self.camera_views: Dict[str, CameraView] = {}
         self.saved_count = 0
         self._episode_state = "idle"
-        self._fixed_output_root = str(Path.home() / "Desktop" / "franka_record_data")
+        self._closing = False
+        self._replay_process: Optional[QtCore.QProcess] = None
+        self._replay_log_dialog: Optional[QtWidgets.QDialog] = None
+        self._replay_log_text: Optional[QtWidgets.QPlainTextEdit] = None
+        self._tasks_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-tasks")
+        self._index_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-index")
+        self._disk_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-disk")
+        self._tasks_future: Optional[Future] = None
+        self._disk_future: Optional[Future] = None
+        self._next_indices_future: Optional[Future] = None
+        self._next_indices_task = ""
+        self._fixed_output_root = str(Path.home() / "Desktop" / "Muka_NAS")
         self.controller.options.output_root = self._fixed_output_root
 
         window_titles = {
@@ -109,11 +155,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_quality_controls_enabled(False)
         self._connect_signals()
         self._refresh_tasks()
-        self._refresh_disk()
+        self._load_form_state()
+        self._connect_form_state_signals()
+        self.disk_label.setText("NAS disk usage: idle check pending")
 
         self.disk_timer = QtCore.QTimer(self)
         self.disk_timer.timeout.connect(self._refresh_disk)
-        self.disk_timer.start(5000)
+        self.disk_timer.start(60000)
 
         QtCore.QTimer.singleShot(250, self.controller.start_preview)
         app = QtWidgets.QApplication.instance()
@@ -121,6 +169,7 @@ class MainWindow(QtWidgets.QMainWindow):
             app.installEventFilter(self)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._save_form_state()
         if self._episode_state in {"recording", "paused"}:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -138,7 +187,17 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
-        pending_saves = self.controller.saver.pending_count()
+        if self._is_replay_running():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Replay 正在运行",
+                "当前 replay 进程还没有结束。请先等待完成，或在 replay 日志窗口中停止。",
+            )
+            event.ignore()
+            return
+        pending_saves = self.controller.inflight_save_count()
+        if self._episode_state == "saving" and pending_saves == 0:
+            pending_saves = 1
         if pending_saves > 0:
             QtWidgets.QMessageBox.warning(
                 self,
@@ -157,7 +216,14 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
+        self._closing = True
         self.controller.shutdown()
+        for future in (self._tasks_future, self._next_indices_future, self._disk_future):
+            if future is not None:
+                future.cancel()
+        _shutdown_executor(self._tasks_executor)
+        _shutdown_executor(self._index_executor)
+        _shutdown_executor(self._disk_executor)
         self.process_manager.stop_stack_blocking()
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -193,6 +259,21 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
 
         key = event.key()
+        capture_keys = {
+            QtCore.Qt.Key.Key_S,
+            QtCore.Qt.Key.Key_W,
+            QtCore.Qt.Key.Key_E,
+            QtCore.Qt.Key.Key_D,
+            QtCore.Qt.Key.Key_K,
+            QtCore.Qt.Key.Key_H,
+            QtCore.Qt.Key.Key_L,
+            QtCore.Qt.Key.Key_F,
+            QtCore.Qt.Key.Key_Q,
+        }
+        if key in capture_keys and self._is_replay_running():
+            self._set_status("Replay 运行中，采集快捷键已忽略")
+            event.accept()
+            return True
         if key == QtCore.Qt.Key.Key_S:
             self._start_recording()
         elif key == QtCore.Qt.Key.Key_W:
@@ -411,6 +492,14 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.log_btn)
 
         layout.addSpacing(6)
+        replay_title = QtWidgets.QLabel("数据复现")
+        replay_title.setObjectName("SectionTitle")
+        layout.addWidget(replay_title)
+        self.replay_btn = QtWidgets.QPushButton("Replay")
+        self.replay_btn.setObjectName("Purple")
+        layout.addWidget(self.replay_btn)
+
+        layout.addSpacing(6)
         capture_title = QtWidgets.QLabel("数据采集")
         capture_title.setObjectName("SectionTitle")
         layout.addWidget(capture_title)
@@ -569,11 +658,12 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel
 
     def _connect_signals(self) -> None:
-        self.start_stack_btn.clicked.connect(self.process_manager.start_stack)
-        self.stop_stack_btn.clicked.connect(self.process_manager.stop_stack)
-        self.stop_env_btn.clicked.connect(self.process_manager.stop_teleop_env)
+        self.start_stack_btn.clicked.connect(self._start_stack_clicked)
+        self.stop_stack_btn.clicked.connect(self._stop_stack_clicked)
+        self.stop_env_btn.clicked.connect(self._stop_env_clicked)
         self.preview_btn.clicked.connect(self._restart_preview)
         self.log_btn.clicked.connect(self._show_logs)
+        self.replay_btn.clicked.connect(self._open_replay_dialog)
 
         self.record_btn.clicked.connect(self._start_recording)
         self.pause_btn.clicked.connect(self.controller.pause)
@@ -594,18 +684,45 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.recording_frame_count.connect(lambda count: self.frame_count.setText(f"当前帧数: {count}"))
         self.controller.save_queue_changed.connect(lambda count: self.save_queue.setText(f"保存队列: {count}"))
         self.controller.episode_saved.connect(self._episode_saved)
+        self._tasks_loaded.connect(self._apply_tasks)
+        self._disk_loaded.connect(self._apply_disk_usage)
+        self._next_indices_loaded.connect(self._apply_next_indices)
 
         self.process_manager.status_changed.connect(self._set_status)
         self.process_manager.error.connect(self._show_error)
         self.process_manager.stack_state_changed.connect(self._stack_state_changed)
 
+    def _connect_form_state_signals(self) -> None:
+        self.task_combo.currentTextChanged.connect(self._save_form_state)
+        self.task_combo.editTextChanged.connect(self._save_form_state)
+        self.instruction_edit.textChanged.connect(self._save_form_state)
+        self.metadata_edit.textChanged.connect(self._save_form_state)
+
+    def _start_stack_clicked(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能启动机器人栈。"):
+            return
+        self.process_manager.start_stack()
+
+    def _stop_stack_clicked(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能从 GUI 停止采集栈；请先停止 replay。"):
+            return
+        self.process_manager.stop_stack()
+
+    def _stop_env_clicked(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能停止 teleop env；请先停止 replay。"):
+            return
+        self.process_manager.stop_teleop_env()
+
     def _start_recording(self) -> None:
+        self._save_form_state()
+        if self._guard_replay_running("Replay 运行中不能开始或继续采集。"):
+            return
         task = self.task_combo.currentText().strip()
         if not task:
             self._show_error("任务名称不能为空")
             return
         if not _is_valid_task_name(task):
-            self._show_error("任务名称不能包含 / 或空字符")
+            self._show_error("任务名称不能为 . 或 ..，也不能包含 /、\\ 或空字符")
             return
         instruction = self.instruction_edit.toPlainText().strip()
         if not instruction:
@@ -617,7 +734,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.options.output_root = self._fixed_output_root
         self.controller.start_or_resume(task, instruction, user_metadata=user_metadata)
 
+    def _ensure_output_root_available(self) -> bool:
+        # Final output availability is checked in the background publish stage.
+        return True
+
     def _restart_preview(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能重启预览。"):
+            return
         if self._episode_state in {"recording", "paused", "quality_pending"}:
             self._show_error("录制、暂停或等待分层中不能重启预览，请先保存分层或丢弃当前 episode。")
             return
@@ -735,7 +858,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.saved_episodes.setText(f"已保存: {self.saved_count}")
         self.active_episode.setText(f"最近保存: {_display_output_path(output_dir, self._fixed_output_root)}, frames={frames}")
         self._refresh_tasks()
-        self._refresh_disk()
         self._update_next_path()
 
     def _stack_state_changed(self, state: str) -> None:
@@ -762,11 +884,286 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(close_btn)
         dialog.exec()
 
+    def _open_replay_dialog(self) -> None:
+        if self._episode_state in {"recording", "paused", "quality_pending"}:
+            self._show_error("录制、暂停或等待分层中不能 replay，请先保存分层或丢弃当前 episode。")
+            return
+        if self.controller.inflight_save_count() > 0 or self._episode_state == "saving":
+            self._show_error("后台保存队列未清空，避免 replay 和保存抢占资源。请等待保存完成。")
+            return
+        if self._is_replay_running():
+            self._focus_replay_log_dialog()
+            self._set_status("Replay 正在运行；已打开日志窗口")
+            return
+
+        dialog = ReplayOptionsDialog(Path(self._fixed_output_root).expanduser(), self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return
+        options = dialog.options()
+
+        try:
+            info = inspect_replay_input(options.path, latest=options.latest)
+            target = validate_replay_target(info, self.controller.options.mode)
+        except Exception as exc:
+            self._show_error(f"Replay 数据和当前 GUI 不匹配，或路径无效:\n{exc}")
+            return
+
+        if options.run_mode == "execute":
+            message = (
+                f"将执行 replay，并向机器人发送命令。\n\n"
+                f"GUI 模式: {_mode_label(self.controller.options.mode)}\n"
+                f"数据类型: {info.display_kind}\n"
+                f"Episode: {info.episode_dir}\n"
+                f"Frames: {info.frame_count_text}\n\n"
+                "如果起点偏差超过普通阈值但仍在自动靠近安全上限内，"
+                "执行模式会先慢速靠近 frame 0。\n"
+                "执行前确认没有其他 teleop/recording 控制同一机械臂，"
+                "对应机械臂已在安全位置，工作区清空，E-stop 可触达。"
+            )
+            response = QtWidgets.QMessageBox.warning(
+                self,
+                "确认执行 Replay",
+                message,
+                QtWidgets.QMessageBox.StandardButton.Ok
+                | QtWidgets.QMessageBox.StandardButton.Cancel,
+                QtWidgets.QMessageBox.StandardButton.Cancel,
+            )
+            if response != QtWidgets.QMessageBox.StandardButton.Ok:
+                return
+
+        try:
+            self.process_manager.prepare_for_replay(target, options.run_mode)
+        except Exception as exc:
+            self._show_error(f"Replay 前置检查失败:\n{exc}")
+            return
+
+        self._launch_replay(info, target, options)
+
+    def _launch_replay(
+        self,
+        info: ReplayEpisodeInfo,
+        target: str,
+        options: ReplayLaunchOptions,
+    ) -> None:
+        script_name = "16_replay_bi_arm_pipeline.sh" if target == "dual" else "7_replay_fr3.sh"
+        script_path = self.repo_root / script_name
+        if not script_path.exists():
+            self._show_error(f"未找到 replay 脚本: {script_path}")
+            return
+
+        args = [str(script_path), str(info.episode_dir)]
+        if target in {"left", "right"}:
+            args.extend(["--arm", target])
+        if options.run_mode == "file_check":
+            args.append("--skip-robot-check")
+        elif options.run_mode == "execute":
+            args.append("--execute")
+
+        process = QtCore.QProcess(self)
+        process.setProgram("bash")
+        process.setArguments(args)
+        process.setWorkingDirectory(str(self.repo_root))
+        process.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
+        process.setProcessEnvironment(self._replay_environment(options, target))
+        process.readyReadStandardOutput.connect(self._read_replay_output)
+        process.readyReadStandardError.connect(self._read_replay_output)
+        process.finished.connect(self._replay_finished)
+        process.errorOccurred.connect(self._replay_process_error)
+
+        self._replay_process = process
+        self._show_replay_log_dialog(info, target, options, ["bash", *args])
+        self._set_replay_controls_running(True)
+        self._append_replay_log(">>> Starting replay process ...\n")
+        process.start()
+        if not process.waitForStarted(3000):
+            self._show_error(f"Replay 进程启动失败: {process.errorString()}")
+            self._replay_process = None
+            self._set_replay_controls_running(False)
+            return
+        self._set_status("Replay 已启动")
+
+    def _replay_environment(
+        self,
+        options: ReplayLaunchOptions,
+        target: str,
+    ) -> QtCore.QProcessEnvironment:
+        env = QtCore.QProcessEnvironment.systemEnvironment()
+        env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("DEFAULT_REPLAY_SPEED", _format_float(options.speed))
+        env.insert("DEFAULT_GRIPPER_SPEED", _format_float(options.gripper_speed))
+        env.insert("DEFAULT_GRIPPER_FORCE", _format_float(options.gripper_force))
+        env.insert("DEFAULT_GRIPPER_EVENT_DELTA", _format_float(options.gripper_event_delta))
+        env.insert("DEFAULT_GRIPPER_REPLAY_MODE", options.gripper_replay_mode)
+        env.insert("DEFAULT_GRIPPER_COMMAND_HZ", _format_float(options.gripper_command_hz))
+        env.insert("DEFAULT_GRIPPER_HOLD_SEC", _format_float(options.gripper_hold_sec))
+        env.insert("DEFAULT_APPROACH_START", "1" if options.approach_start else "0")
+        env.insert("DEFAULT_APPROACH_START_MAX_DELTA", _format_float(options.approach_start_max_delta))
+        env.insert("DEFAULT_APPROACH_START_STEP_DELTA", _format_float(options.approach_start_step_delta))
+        env.insert("DEFAULT_APPROACH_START_HZ", _format_float(options.approach_start_hz))
+
+        if target == "dual":
+            password = _read_gui_password()
+            if password:
+                for key in (
+                    "BI_ARM_LOCAL_SUDO_PASSWORD",
+                    "BI_ARM_REMOTE_SUDO_PASSWORD",
+                    "BI_ARM_SSH_PASSWORD",
+                ):
+                    if not env.value(key):
+                        env.insert(key, password)
+        return env
+
+    def _show_replay_log_dialog(
+        self,
+        info: ReplayEpisodeInfo,
+        target: str,
+        options: ReplayLaunchOptions,
+        command: list[str],
+    ) -> None:
+        dialog = QtWidgets.QDialog(self)
+        dialog.setWindowTitle("Replay 日志")
+        dialog.resize(920, 640)
+        layout = QtWidgets.QVBoxLayout(dialog)
+        text = QtWidgets.QPlainTextEdit()
+        text.setReadOnly(True)
+        text.setPlainText(
+            "Replay target: "
+            f"{target}\n"
+            f"Run mode: {options.run_mode}\n"
+            f"Episode: {info.episode_dir}\n"
+            f"Resolved pkl: {info.episode_file}\n"
+            f"Schema: {info.schema_version}, frames={info.frame_count_text}\n"
+            f"Command: {_shell_join(command)}\n\n"
+        )
+        layout.addWidget(text)
+        buttons = QtWidgets.QDialogButtonBox()
+        stop_btn = buttons.addButton("停止 replay", QtWidgets.QDialogButtonBox.ButtonRole.DestructiveRole)
+        close_btn = buttons.addButton("隐藏日志", QtWidgets.QDialogButtonBox.ButtonRole.AcceptRole)
+        stop_btn.clicked.connect(self._stop_replay_process)
+        close_btn.clicked.connect(dialog.hide)
+        layout.addWidget(buttons)
+        self._replay_log_dialog = dialog
+        self._replay_log_text = text
+        dialog.show()
+
+    def _append_replay_log(self, text: str) -> None:
+        if not text:
+            return
+        if self._replay_log_text is None:
+            return
+        self._replay_log_text.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+        self._replay_log_text.insertPlainText(text)
+        self._replay_log_text.moveCursor(QtGui.QTextCursor.MoveOperation.End)
+
+    def _read_replay_output(self) -> None:
+        process = self._replay_process
+        if process is None:
+            return
+        data = bytes(process.readAllStandardOutput())
+        if data:
+            self._append_replay_log(data.decode("utf-8", errors="replace"))
+
+    def _replay_finished(self, exit_code: int, exit_status: QtCore.QProcess.ExitStatus) -> None:
+        self._read_replay_output()
+        if exit_status == QtCore.QProcess.ExitStatus.NormalExit and exit_code == 0:
+            self._append_replay_log("\n>>> Replay process finished successfully.\n")
+            self._set_status("Replay 完成")
+        else:
+            self._append_replay_log(f"\n>>> Replay process failed: exit_code={exit_code}\n")
+            self._set_status(f"Replay 失败: exit_code={exit_code}")
+        self._replay_process = None
+        self._set_replay_controls_running(False)
+
+    def _replay_process_error(self, error: QtCore.QProcess.ProcessError) -> None:
+        process = self._replay_process
+        message = process.errorString() if process is not None else str(error)
+        self._append_replay_log(f"\n>>> Replay process error: {message}\n")
+        self._set_status(f"Replay 进程错误: {message}")
+
+    def _stop_replay_process(self) -> None:
+        process = self._replay_process
+        if process is None:
+            return
+        self._append_replay_log("\n>>> Stopping replay process ...\n")
+        process.terminate()
+        QtCore.QTimer.singleShot(20000, self._force_kill_replay_process)
+
+    def _force_kill_replay_process(self) -> None:
+        process = self._replay_process
+        if process is not None and process.state() != QtCore.QProcess.ProcessState.NotRunning:
+            self._append_replay_log("\n>>> Replay process did not stop after 20s; killing it.\n")
+            process.kill()
+
+    def _is_replay_running(self) -> bool:
+        return (
+            self._replay_process is not None
+            and self._replay_process.state() != QtCore.QProcess.ProcessState.NotRunning
+        )
+
+    def _focus_replay_log_dialog(self) -> None:
+        if self._replay_log_dialog is None:
+            return
+        self._replay_log_dialog.show()
+        self._replay_log_dialog.raise_()
+        self._replay_log_dialog.activateWindow()
+
+    def _set_replay_controls_running(self, running: bool) -> None:
+        self.replay_btn.setText("Replay 日志" if running else "Replay")
+        for widget in (
+            self.start_stack_btn,
+            self.stop_stack_btn,
+            self.stop_env_btn,
+            self.preview_btn,
+            self.record_btn,
+            self.pause_btn,
+            self.end_btn,
+            self.discard_btn,
+            self.keyframe_btn,
+            self.new_task_btn,
+        ):
+            widget.setEnabled(not running)
+        if running:
+            self._set_config_controls_enabled(False)
+            self._set_quality_controls_enabled(False)
+            return
+        config_enabled = self._episode_state not in {"recording", "paused", "quality_pending"}
+        self._set_config_controls_enabled(config_enabled)
+        self._set_quality_controls_enabled(self._episode_state == "quality_pending")
+
+    def _guard_replay_running(self, message: str) -> bool:
+        if not self._is_replay_running():
+            return False
+        self._show_error(message)
+        self._focus_replay_log_dialog()
+        return True
+
     def _refresh_tasks(self) -> None:
+        if self._closing:
+            return
         current = self.task_combo.currentText().strip()
+        if self._tasks_future is not None and not self._tasks_future.done():
+            return
+        self._tasks_future = self._tasks_executor.submit(self.controller.scan_tasks)
+        self._tasks_future.add_done_callback(
+            lambda future, current=current: self._tasks_future_done(future, current)
+        )
+
+    def _tasks_future_done(self, future: Future, current: str) -> None:
+        if self._closing or future.cancelled():
+            return
+        try:
+            tasks = future.result()
+        except Exception:
+            tasks = []
+        self._tasks_loaded.emit(list(tasks), current)
+
+    def _apply_tasks(self, tasks: list, previous_current: str) -> None:
+        if self._closing:
+            return
+        current = self.task_combo.currentText().strip() or previous_current
         self.task_combo.blockSignals(True)
         self.task_combo.clear()
-        self.task_combo.addItems(self.controller.scan_tasks())
+        self.task_combo.addItems([str(task) for task in tasks])
         if current:
             self.task_combo.setCurrentText(current)
         elif self.task_combo.count() == 0:
@@ -775,6 +1172,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_next_path()
 
     def _create_task(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能新增采集任务。"):
+            return
         if self._episode_state in {"recording", "paused", "quality_pending"}:
             self._show_error("录制、暂停或等待分层中不能新增任务，请先保存分层或丢弃当前 episode。")
             return
@@ -802,18 +1201,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._show_error("任务名称不能为空")
             return
         if not _is_valid_task_name(task):
-            self._show_error("任务名称不能包含 / 或空字符")
+            self._show_error("任务名称不能为 . 或 ..，也不能包含 /、\\ 或空字符")
             return
 
-        self.controller.options.output_root = self._fixed_output_root
-        task_dir = Path(self._fixed_output_root).expanduser() / task
-        try:
-            task_dir.mkdir(parents=True, exist_ok=True)
-        except Exception as exc:
-            self._show_error(f"创建任务目录失败: {task_dir}\n{exc}")
-            return
-
-        self._refresh_tasks()
+        if self.task_combo.findText(task) < 0:
+            self.task_combo.addItem(task)
         self.task_combo.setCurrentText(task)
         self._set_status(f"已新增任务: {task}")
         self._update_next_path()
@@ -845,6 +1237,52 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return value
 
+    def _load_form_state(self) -> None:
+        self._loading_form_state = True
+        try:
+            try:
+                payload = json.loads(self._form_state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                return
+            if not isinstance(payload, dict):
+                return
+            task = str(payload.get("task_name", "") or "").strip()
+            instruction = str(payload.get("text_instruction", "") or "")
+            metadata_text = str(payload.get("metadata_text", "") or "")
+            if task:
+                self.task_combo.setCurrentText(task)
+            if instruction:
+                self.instruction_edit.setPlainText(instruction)
+            if metadata_text:
+                self.metadata_edit.setPlainText(metadata_text)
+        finally:
+            self._loading_form_state = False
+            self._update_next_path()
+
+    def _save_form_state(self, *_) -> None:
+        if self._loading_form_state:
+            return
+        payload = {
+            "schema_version": 1,
+            "profile_key": self.profile_key,
+            "task_name": self.task_combo.currentText().strip(),
+            "text_instruction": self.instruction_edit.toPlainText(),
+            "metadata_text": self.metadata_edit.toPlainText(),
+            "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        try:
+            self._form_state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._form_state_path.with_name(
+                f".{self._form_state_path.name}.{os.getpid()}.tmp"
+            )
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            tmp_path.replace(self._form_state_path)
+        except OSError:
+            return
+
     def _update_next_path(self) -> None:
         task = self.task_combo.currentText().strip()
         if not task or not _is_valid_task_name(task):
@@ -860,9 +1298,46 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.next_path_label.setToolTip(full_path)
             return
-        high_index = self.controller.peek_next_episode_index(task, HIGH_QUALITY_DIR)
-        low_index = self.controller.peek_next_episode_index(task, LOW_QUALITY_DIR)
-        failure_index = self.controller.peek_next_episode_index(task, FAILURE_DIR)
+        indices = {
+            HIGH_QUALITY_DIR: self.controller.peek_next_episode_index(task, HIGH_QUALITY_DIR),
+            LOW_QUALITY_DIR: self.controller.peek_next_episode_index(task, LOW_QUALITY_DIR),
+            FAILURE_DIR: self.controller.peek_next_episode_index(task, FAILURE_DIR),
+        }
+        self._set_next_path_label(task, indices)
+        if (
+            self._next_indices_future is None
+            or self._next_indices_future.done()
+            or self._next_indices_task != task
+        ):
+            self._next_indices_task = task
+            self._next_indices_future = self._index_executor.submit(
+                self.controller.refresh_next_episode_indices,
+                task,
+            )
+            self._next_indices_future.add_done_callback(
+                lambda future, task=task: self._next_indices_future_done(future, task)
+            )
+
+    def _next_indices_future_done(self, future: Future, task: str) -> None:
+        if self._closing or future.cancelled():
+            return
+        try:
+            indices = future.result()
+        except Exception:
+            return
+        self._next_indices_loaded.emit(task, dict(indices))
+
+    def _apply_next_indices(self, task: str, indices: dict) -> None:
+        if self._closing:
+            return
+        if task != self.task_combo.currentText().strip():
+            return
+        self._set_next_path_label(task, indices)
+
+    def _set_next_path_label(self, task: str, indices: dict) -> None:
+        high_index = int(indices.get(HIGH_QUALITY_DIR, 0))
+        low_index = int(indices.get(LOW_QUALITY_DIR, 0))
+        failure_index = int(indices.get(FAILURE_DIR, 0))
         full_path = (
             f"{self._fixed_output_root}/{task}/{HIGH_QUALITY_DIR}/{high_index}\n"
             f"{self._fixed_output_root}/{task}/{LOW_QUALITY_DIR}/{low_index}\n"
@@ -877,14 +1352,144 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_path_label.setToolTip(full_path)
 
     def _refresh_disk(self) -> None:
+        if self._closing:
+            return
+        if self._episode_state in {"recording", "paused", "quality_pending", "saving"}:
+            return
+        if self._disk_future is not None and not self._disk_future.done():
+            return
+        self._disk_future = self._disk_executor.submit(self.controller.disk_usage)
+        self._disk_future.add_done_callback(self._disk_future_done)
+
+    def _disk_future_done(self, future: Future) -> None:
+        if self._closing or future.cancelled():
+            return
         try:
-            usage = self.controller.disk_usage()
+            usage = future.result()
         except Exception:
+            return
+        self._disk_loaded.emit(usage)
+
+    def _apply_disk_usage(self, usage) -> None:
+        if self._closing:
             return
         used = usage.total - usage.free
         percent = int(used / usage.total * 100) if usage.total else 0
         self.disk_bar.setValue(percent)
         self.disk_label.setText(f"{_format_bytes(usage.free)} free / {_format_bytes(usage.total)}")
+
+
+class ReplayOptionsDialog(QtWidgets.QDialog):
+    def __init__(self, default_root: Path, parent=None) -> None:
+        super().__init__(parent)
+        self.default_root = default_root
+        self.setWindowTitle("Replay")
+        self.resize(620, 430)
+
+        layout = QtWidgets.QVBoxLayout(self)
+        form = QtWidgets.QFormLayout()
+
+        path_row = QtWidgets.QHBoxLayout()
+        self.path_edit = QtWidgets.QLineEdit()
+        self.path_edit.setText(str(default_root))
+        self.path_edit.setPlaceholderText("选择 episode 目录、metadata.json 或 .pkl.gz")
+        dir_btn = QtWidgets.QPushButton("目录")
+        file_btn = QtWidgets.QPushButton("文件")
+        dir_btn.clicked.connect(self._browse_directory)
+        file_btn.clicked.connect(self._browse_file)
+        path_row.addWidget(self.path_edit, 1)
+        path_row.addWidget(dir_btn)
+        path_row.addWidget(file_btn)
+        form.addRow("Replay 路径", path_row)
+
+        self.latest_check = QtWidgets.QCheckBox("从任务/质量目录选择最新 episode")
+        form.addRow("Latest", self.latest_check)
+
+        self.run_mode_combo = QtWidgets.QComboBox()
+        self.run_mode_combo.addItem("硬件 dry-run：检查起点/自动靠近可行性，不发送轨迹", "dry_run")
+        self.run_mode_combo.addItem("只检查文件：不连接 robot node", "file_check")
+        self.run_mode_combo.addItem("执行 replay：发送轨迹命令", "execute")
+        form.addRow("运行模式", self.run_mode_combo)
+
+        self.speed_spin = _double_spin(1.0, 0.05, 5.0, 2)
+        form.addRow("轨迹速度", self.speed_spin)
+
+        self.approach_check = QtWidgets.QCheckBox("起点偏差允许时自动慢速靠近 frame 0")
+        self.approach_check.setChecked(True)
+        form.addRow("Approach", self.approach_check)
+        self.approach_max_delta_spin = _double_spin(0.75, 0.01, 3.0, 3)
+        self.approach_step_delta_spin = _double_spin(0.02, 0.001, 0.5, 3)
+        self.approach_hz_spin = _double_spin(5.0, 0.1, 60.0, 1)
+        form.addRow("靠近 max delta", self.approach_max_delta_spin)
+        form.addRow("靠近 step delta", self.approach_step_delta_spin)
+        form.addRow("靠近 Hz", self.approach_hz_spin)
+
+        self.gripper_mode_combo = QtWidgets.QComboBox()
+        self.gripper_mode_combo.addItem("event", "event")
+        self.gripper_mode_combo.addItem("continuous", "continuous")
+        form.addRow("夹爪 replay", self.gripper_mode_combo)
+        self.gripper_speed_spin = _double_spin(0.1, 0.001, 1.0, 3)
+        self.gripper_force_spin = _double_spin(10.0, 0.1, 100.0, 1)
+        self.gripper_event_delta_spin = _double_spin(0.01, 0.0001, 0.08, 4)
+        self.gripper_command_hz_spin = _double_spin(15.0, 0.1, 60.0, 1)
+        self.gripper_hold_spin = _double_spin(2.0, 0.0, 10.0, 2)
+        form.addRow("夹爪 speed", self.gripper_speed_spin)
+        form.addRow("夹爪 force", self.gripper_force_spin)
+        form.addRow("夹爪事件阈值", self.gripper_event_delta_spin)
+        form.addRow("夹爪 command Hz", self.gripper_command_hz_spin)
+        form.addRow("夹爪事件后暂停", self.gripper_hold_spin)
+
+        layout.addLayout(form)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.StandardButton.Ok
+            | QtWidgets.QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def accept(self) -> None:
+        if not self.path_edit.text().strip():
+            QtWidgets.QMessageBox.warning(self, "路径为空", "请选择 replay 路径。")
+            return
+        super().accept()
+
+    def options(self) -> ReplayLaunchOptions:
+        return ReplayLaunchOptions(
+            path=self.path_edit.text().strip(),
+            latest=self.latest_check.isChecked(),
+            run_mode=str(self.run_mode_combo.currentData()),
+            speed=float(self.speed_spin.value()),
+            gripper_speed=float(self.gripper_speed_spin.value()),
+            gripper_force=float(self.gripper_force_spin.value()),
+            gripper_event_delta=float(self.gripper_event_delta_spin.value()),
+            gripper_replay_mode=str(self.gripper_mode_combo.currentData()),
+            gripper_command_hz=float(self.gripper_command_hz_spin.value()),
+            gripper_hold_sec=float(self.gripper_hold_spin.value()),
+            approach_start=self.approach_check.isChecked(),
+            approach_start_max_delta=float(self.approach_max_delta_spin.value()),
+            approach_start_step_delta=float(self.approach_step_delta_spin.value()),
+            approach_start_hz=float(self.approach_hz_spin.value()),
+        )
+
+    def _browse_directory(self) -> None:
+        directory = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            "选择 replay episode 目录",
+            self.path_edit.text().strip() or str(self.default_root),
+        )
+        if directory:
+            self.path_edit.setText(directory)
+
+    def _browse_file(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "选择 replay 文件",
+            self.path_edit.text().strip() or str(self.default_root),
+            "Replay input (*.pkl.gz *.json *.txt);;All files (*)",
+        )
+        if path:
+            self.path_edit.setText(path)
 
 
 def _rgb_to_qimage(rgb: np.ndarray) -> QtGui.QImage:
@@ -908,6 +1513,59 @@ def _format_bytes(value: int) -> str:
             return f"{size:.1f}{unit}"
         size /= 1024.0
     return f"{size:.1f}TB"
+
+
+def _format_float(value: float) -> str:
+    return f"{float(value):g}"
+
+
+def _double_spin(
+    value: float,
+    minimum: float,
+    maximum: float,
+    decimals: int,
+) -> QtWidgets.QDoubleSpinBox:
+    spin = QtWidgets.QDoubleSpinBox()
+    spin.setRange(float(minimum), float(maximum))
+    spin.setDecimals(decimals)
+    spin.setSingleStep(10 ** (-max(0, decimals)))
+    spin.setValue(float(value))
+    return spin
+
+
+def _shell_join(args: list[str]) -> str:
+    return " ".join(_shell_quote(arg) for arg in args)
+
+
+def _shell_quote(value: str) -> str:
+    if value == "":
+        return "''"
+    safe = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-=.,/:@%")
+    if all(ch in safe for ch in value):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _read_gui_password() -> Optional[str]:
+    password = os.environ.get("FRANKA_GUI_SUDO_PASSWORD")
+    if password:
+        return password
+    password_file = os.environ.get("FRANKA_GUI_SUDO_PASSWORD_FILE")
+    if not password_file:
+        return None
+    path = Path(password_file).expanduser()
+    try:
+        return path.read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def _mode_label(mode: str) -> str:
+    if mode == "dual":
+        return "双臂"
+    if mode == "right":
+        return "右臂"
+    return "左臂"
 
 
 def _display_output_path(output_dir: str, output_root: str) -> str:
@@ -939,4 +1597,27 @@ def _is_text_input_widget(widget: Optional[QtWidgets.QWidget]) -> bool:
 
 
 def _is_valid_task_name(task: str) -> bool:
-    return bool(task) and "/" not in task and "\x00" not in task
+    token = task.strip()
+    return bool(token) and token not in {".", ".."} and "/" not in token and "\\" not in token and "\x00" not in token
+
+
+def _shutdown_executor(executor: ThreadPoolExecutor) -> None:
+    try:
+        executor.shutdown(wait=False, cancel_futures=True)
+    except TypeError:
+        executor.shutdown(wait=False)
+
+
+def _safe_profile_key(value: str) -> str:
+    key = value.strip() or "default"
+    safe = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in key)
+    return safe or "default"
+
+
+def _form_state_path(profile_key: str) -> Path:
+    override = os.environ.get("FRANKA_GUI_LAST_INPUTS_PATH")
+    if override:
+        return Path(override).expanduser()
+    root = os.environ.get("XDG_STATE_HOME")
+    state_root = Path(root).expanduser() if root else Path.home() / ".local" / "state"
+    return state_root / "frankateleop" / "franka_gui" / f"last_inputs_{profile_key}.json"

@@ -18,7 +18,9 @@ from .replay_fr3 import (
     extract_gripper_events,
     gripper_command_to_width,
     gripper_width_to_command,
+    infer_episode_kind,
     load_episode,
+    load_episode_metadata,
     resolve_episode_file,
 )
 
@@ -36,7 +38,15 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "episode",
-        help="Dual-arm episode directory, or the exact .pkl.gz file.",
+        help=(
+            "Dual-arm episode directory, metadata.json, or .pkl.gz file. Supports "
+            "old task/index and current task/Quality/index layouts."
+        ),
+    )
+    parser.add_argument(
+        "--latest",
+        action="store_true",
+        help="If the input is a task or quality directory containing multiple episodes, replay the newest one.",
     )
     parser.add_argument("--left-host", default="127.0.0.1")
     parser.add_argument("--left-port", type=int, default=6002)
@@ -228,13 +238,14 @@ def extract_timestamps(frames) -> np.ndarray:
 def print_episode_summary(
     episode_path: Path,
     payload,
+    metadata,
     frames,
     timestamps,
     trajectories: Dict[str, ArmTrajectory],
 ):
     duration = float(timestamps[-1] - timestamps[0]) if len(timestamps) > 1 else 0.0
     avg_fps = float((len(timestamps) - 1) / duration) if duration > 0 else 0.0
-    schema = frames[0].get("schema_version", "<missing>")
+    schema = metadata.get("schema_version") or frames[0].get("schema_version", "<missing>")
 
     print(f"Episode: {episode_path}")
     print(f"Schema: {schema}")
@@ -304,17 +315,15 @@ def check_start_delta_policy(args, start_infos):
     if max_delta <= args.max_start_delta:
         return False
 
-    if not args.execute:
-        raise RuntimeError(
-            f"Start joint max delta {max_delta:.6f} exceeds --max-start-delta "
-            f"{args.max_start_delta:.6f}. Move both robots close to frame 0 first, "
-            "or run with --execute --approach-start to auto-approach."
-        )
     if not args.approach_start:
+        hint = (
+            "Pass --approach-start to slowly move both robots to frame 0 first."
+            if args.execute
+            else "Move both robots close to frame 0 first, or enable --approach-start."
+        )
         raise RuntimeError(
             f"Start joint max delta {max_delta:.6f} exceeds --max-start-delta "
-            f"{args.max_start_delta:.6f}. Pass --approach-start to slowly move "
-            "both robots to frame 0 first."
+            f"{args.max_start_delta:.6f}. {hint}"
         )
     if max_delta > args.approach_start_max_delta:
         raise RuntimeError(
@@ -322,6 +331,13 @@ def check_start_delta_policy(args, start_infos):
             f"--approach-start-max-delta {args.approach_start_max_delta:.6f}. "
             "Move both robots closer to frame 0 first."
         )
+    if not args.execute:
+        print(
+            "Start joint max delta exceeds --max-start-delta, but is within "
+            "--approach-start-max-delta. Dry-run passes because --execute "
+            "--approach-start would slowly move both robots to frame 0 before replay."
+        )
+        return False
     return True
 
 
@@ -598,21 +614,38 @@ def main():
     if args.approach_start_hz <= 0:
         raise ValueError("--approach-start-hz must be positive")
 
-    episode_path = resolve_episode_file(args.episode)
-    payload, frames = load_episode(episode_path)
-    timestamps = extract_timestamps(frames)
-    trajectories = extract_dual_trajectories(
-        frames,
-        timestamps,
-        args.gripper_event_delta,
-    )
-    print_episode_summary(
-        episode_path,
-        payload,
-        frames,
-        timestamps,
-        trajectories,
-    )
+    try:
+        episode_path = resolve_episode_file(args.episode, latest=args.latest)
+        payload, frames = load_episode(episode_path)
+        metadata = load_episode_metadata(episode_path)
+        episode_kind = infer_episode_kind(frames, metadata)
+        if episode_kind != "dual":
+            raise ValueError(
+                f"Episode appears to be {episode_kind}; use 7_replay_fr3.sh "
+                "or python -m franka_replay.replay_fr3 for single-arm replay."
+            )
+        timestamps = extract_timestamps(frames)
+        trajectories = extract_dual_trajectories(
+            frames,
+            timestamps,
+            args.gripper_event_delta,
+        )
+        print_episode_summary(
+            episode_path,
+            payload,
+            metadata,
+            frames,
+            timestamps,
+            trajectories,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError, KeyError) as exc:
+        print(f"Dual-arm replay check failed: {exc}")
+        print(
+            "No command was sent. Pass an exact dual-arm episode directory, "
+            "metadata.json, or .pkl.gz file; use --latest only when intentionally "
+            "selecting the newest episode."
+        )
+        raise SystemExit(1)
 
     if args.skip_robot_check:
         print("Robot check skipped. No command was sent.")
@@ -670,17 +703,17 @@ def main():
                             timestamps,
                             trajectories,
                             args.speed,
-                        args.gripper_speed,
-                        args.gripper_force,
-                        args.gripper_hold_sec,
-                        args.gripper_replay_mode,
-                        args.gripper_command_hz,
-                    )
+                            args.gripper_speed,
+                            args.gripper_force,
+                            args.gripper_hold_sec,
+                            args.gripper_replay_mode,
+                            args.gripper_command_hz,
+                        )
                 print("Dual-arm replay finished.")
     except KeyboardInterrupt:
         print("\nDual-arm replay interrupted by user.")
         raise SystemExit(130)
-    except (TimeoutError, RuntimeError, ValueError, KeyError) as exc:
+    except (TimeoutError, RuntimeError, ValueError, KeyError, FileNotFoundError) as exc:
         print(f"Dual-arm replay check failed: {exc}")
         if not args.execute:
             print(

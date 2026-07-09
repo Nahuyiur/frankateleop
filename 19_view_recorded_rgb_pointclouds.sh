@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONDA_ENV="${FRANKA_CAPTURE_CONDA_ENV:-franka_capture}"
-DEFAULT_OUTPUT_ROOT="$HOME/Desktop/franka_record_data"
+MUKA_NAS_ROOT="$HOME/Desktop/Muka_NAS"
+DEFAULT_OUTPUT_ROOT="$MUKA_NAS_ROOT"
 DEFAULT_TASK="rgb_pointcloud"
 
 source_conda() {
@@ -23,6 +24,18 @@ source_conda() {
     source "$CONDA_BASE/etc/profile.d/conda.sh"
 }
 
+require_muka_nas_mounted() {
+    local output_root="$1"
+    case "$output_root" in
+        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
+            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
+                echo "error: NAS is not mounted at $MUKA_NAS_ROOT. Mount Muka_NAS or pass an explicit episode_dir." >&2
+                exit 1
+            fi
+            ;;
+    esac
+}
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<'EOF'
 Usage:
@@ -35,13 +48,13 @@ Purpose:
 
 Examples:
   bash 19_view_recorded_rgb_pointclouds.sh
-  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/franka_record_data/test_depth/0
-  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/franka_record_data/test_depth/0 --frame middle --open
-  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/franka_record_data/test_depth/0 --pointcloud-stride 1
+  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/Muka_NAS/test_depth/0
+  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/Muka_NAS/test_depth/0 --frame middle --open
+  bash 19_view_recorded_rgb_pointclouds.sh /home/pnp/Desktop/Muka_NAS/test_depth/0 --pointcloud-stride 1
 
 Default:
   With no episode_dir, the latest episode under
-  /home/pnp/Desktop/franka_record_data/rgb_pointcloud is used.
+  /home/pnp/Desktop/Muka_NAS/rgb_pointcloud is used.
 
 Outputs:
   <episode_dir>/rgb_pointcloud_view/frame_XXXXXX/
@@ -65,6 +78,7 @@ conda activate "$CONDA_ENV" || {
 }
 
 if [[ "$#" -lt 1 ]]; then
+    require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
     echo ">>> No episode_dir supplied; using latest under $DEFAULT_OUTPUT_ROOT/$DEFAULT_TASK"
 fi
 

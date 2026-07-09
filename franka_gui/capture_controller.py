@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import queue
 import shutil
 import threading
@@ -30,7 +31,15 @@ from franka_capture.config.fr3_single import (
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
 
-from .async_episode_saver import AsyncEpisodeSaver, EpisodeSaveRequest
+from .async_episode_saver import (
+    CACHE_ROOT_ENV,
+    DEFAULT_CACHE_ROOT,
+    SAVE_ERROR_CACHE_MISSING,
+    SAVE_ERROR_FINAL_CONFLICT,
+    AsyncEpisodeSaver,
+    EpisodeSaveRequest,
+    _validate_path_token,
+)
 from .mock_sources import MockRobot, create_mock_cameras
 
 FIXED_CAPTURE_FPS = 30
@@ -39,6 +48,8 @@ HIGH_QUALITY_DIR = "High_Quality"
 LOW_QUALITY_DIR = "Low_Quality"
 FAILURE_DIR = "Failure"
 QUALITY_DIRS = (HIGH_QUALITY_DIR, LOW_QUALITY_DIR, FAILURE_DIR)
+NAS_METADATA_CACHE_TTL_SEC = 10.0
+DISK_USAGE_CACHE_TTL_SEC = 60.0
 
 
 @dataclass
@@ -499,6 +510,13 @@ class CaptureController(QtCore.QObject):
         self._pending_quality_request: EpisodeSaveRequest | None = None
         self._deferred_quality_retry_requests: List[EpisodeSaveRequest] = []
         self._saving_quality_requests: Dict[tuple[str, str, int], EpisodeSaveRequest] = {}
+        self._task_cache: List[str] = []
+        self._task_cache_at = 0.0
+        self._index_cache: Dict[tuple[str, str], tuple[float, int]] = {}
+        self._disk_usage_cache = None
+        self._disk_usage_cache_at = 0.0
+        self._stale_cache_count = self._reserve_stale_cache_indices()
+        self._stale_cache_notice_emitted = False
 
         self.saver.queue_changed.connect(self.save_queue_changed)
         self.saver.save_started.connect(
@@ -511,6 +529,7 @@ class CaptureController(QtCore.QObject):
 
     def start_preview(self) -> None:
         if self.thread is not None and self.thread.isRunning():
+            self._emit_stale_cache_notice()
             return
         self.thread = CaptureThread(self.options, parent=self)
         self.thread.preview_frame.connect(self.preview_frame)
@@ -525,6 +544,7 @@ class CaptureController(QtCore.QObject):
         self.thread.episode_discarded.connect(self._on_episode_discarded)
         self.thread.finished.connect(lambda: self.status_changed.emit("采集线程已退出"))
         self.thread.start()
+        self._emit_stale_cache_notice()
 
     def stop_preview(self) -> None:
         if self.thread is None:
@@ -542,6 +562,11 @@ class CaptureController(QtCore.QObject):
         task_description: str = "",
         user_metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        try:
+            task = _validate_path_token(task, "task")
+        except ValueError as exc:
+            self.error.emit(str(exc))
+            return
         self.start_preview()
         if self.thread is None:
             return
@@ -596,6 +621,9 @@ class CaptureController(QtCore.QObject):
         if self._active_state == "quality_pending" and self._pending_quality_request is not None:
             request = self._pending_quality_request
             self._pending_quality_request = None
+            if request.quality in QUALITY_DIRS:
+                self._release_reserved(request.task, request.index, request.quality)
+            self._cleanup_request_cache(request)
             self._start_pending = False
             self._active_task = None
             self._active_index = None
@@ -625,43 +653,111 @@ class CaptureController(QtCore.QObject):
         self._save_pending_quality(FAILURE_DIR)
 
     def scan_tasks(self) -> List[str]:
+        now = time.monotonic()
+        if now - self._task_cache_at <= NAS_METADATA_CACHE_TTL_SEC:
+            return list(self._task_cache)
+
         root = Path(self.options.output_root).expanduser()
-        if not root.exists():
-            return []
-        return sorted([path.name for path in root.iterdir() if path.is_dir()])
+        try:
+            if not root.exists():
+                tasks: List[str] = []
+            else:
+                tasks = sorted([path.name for path in root.iterdir() if path.is_dir()])
+        except OSError:
+            return list(self._task_cache)
+
+        self._task_cache = tasks
+        self._task_cache_at = now
+        return list(tasks)
 
     def peek_next_episode_index(self, task: str, quality: str = HIGH_QUALITY_DIR) -> int:
-        return self._next_episode_index_for_task(task, quality)
+        return self._cached_next_episode_index(task, quality)
+
+    def refresh_next_episode_indices(self, task: str) -> Dict[str, int]:
+        return {
+            quality: self._refresh_next_episode_index(task, quality)
+            for quality in QUALITY_DIRS
+        }
 
     def disk_usage(self):
+        now = time.monotonic()
+        if (
+            self._disk_usage_cache is not None
+            and now - self._disk_usage_cache_at <= DISK_USAGE_CACHE_TTL_SEC
+        ):
+            return self._disk_usage_cache
+
         root = Path(self.options.output_root).expanduser()
-        root.mkdir(parents=True, exist_ok=True)
-        return shutil.disk_usage(root)
+        try:
+            nas_root = _expected_nas_root(root)
+            if nas_root is not None and not _is_mount_path(nas_root):
+                raise OSError(f"NAS is not mounted at {nas_root}")
+            target = root
+            if not target.exists():
+                target = nas_root if nas_root is not None else root.parent
+            usage = shutil.disk_usage(target)
+        except OSError:
+            if self._disk_usage_cache is not None:
+                return self._disk_usage_cache
+            raise
+
+        self._disk_usage_cache = usage
+        self._disk_usage_cache_at = now
+        return usage
 
     def deferred_quality_retry_count(self) -> int:
         return len(self._deferred_quality_retry_requests)
+
+    def inflight_save_count(self) -> int:
+        return self.saver.pending_count() + len(self._saving_quality_requests)
+
+    def stale_cache_count(self) -> int:
+        return self._stale_cache_count
 
     def shutdown(self) -> None:
         self.stop_preview()
         self.saver.shutdown()
 
     def _allocate_episode_index(self, task: str, quality: str) -> int:
-        next_index = self._next_episode_index_for_task(task, quality)
+        next_index = self._cached_next_episode_index(task, quality)
         self._reserved.setdefault((task, quality), set()).add(next_index)
         return next_index
 
-    def _next_episode_index_for_task(self, task: str, quality: str) -> int:
+    def _cached_next_episode_index(self, task: str, quality: str) -> int:
+        cached = self._index_cache.get((task, quality))
+        next_index = cached[1] if cached is not None else 0
+        return self._apply_reserved_index(task, quality, next_index)
+
+    def _refresh_next_episode_index(self, task: str, quality: str) -> int:
+        try:
+            task = _validate_path_token(task, "task")
+            quality = _validate_path_token(quality, "quality")
+        except ValueError:
+            return self._cached_next_episode_index(task, quality)
         root = Path(self.options.output_root).expanduser() / task / quality
-        existing: List[int] = []
-        if root.exists():
-            for child in root.iterdir():
-                if child.is_dir() and child.name.isdigit():
-                    existing.append(int(child.name))
+        cache_key = (task, quality)
+        now = time.monotonic()
+
+        try:
+            existing: List[int] = []
+            if root.exists():
+                for child in root.iterdir():
+                    if child.is_dir() and child.name.isdigit():
+                        existing.append(int(child.name))
+            next_index = max(existing, default=-1) + 1
+        except OSError:
+            cached = self._index_cache.get(cache_key)
+            next_index = cached[1] if cached is not None else 0
+
+        self._index_cache[cache_key] = (now, next_index)
+        return self._apply_reserved_index(task, quality, next_index)
+
+    def _apply_reserved_index(self, task: str, quality: str, next_index: int) -> int:
         reserved = self._reserved.setdefault((task, quality), set())
-        return max(existing + list(reserved), default=-1) + 1
+        return max([max(0, int(next_index)) - 1, *reserved], default=-1) + 1
 
     def _next_display_episode_index(self, task: str) -> int:
-        return min(self._next_episode_index_for_task(task, quality) for quality in QUALITY_DIRS)
+        return min(self._cached_next_episode_index(task, quality) for quality in QUALITY_DIRS)
 
     def _release_reserved(self, task: str, index: int, quality: str) -> None:
         self._reserved.setdefault((task, quality), set()).discard(index)
@@ -712,6 +808,8 @@ class CaptureController(QtCore.QObject):
         quality = Path(output_dir).parent.name
         if quality in QUALITY_DIRS:
             self._saving_quality_requests.pop((task, quality, index), None)
+            self._release_reserved(task, index, quality)
+            self._remember_saved_episode(task, quality, index)
         self.episode_saved.emit(task, index, output_dir, frame_count)
         if self._active_task is None:
             if not self._maybe_restore_deferred_quality_request():
@@ -719,26 +817,70 @@ class CaptureController(QtCore.QObject):
                 self.active_episode_changed.emit(task, index, "saved")
         self.status_changed.emit(f"保存完成: {output_dir}, frames={frame_count}")
 
-    def _on_save_failed(self, task: str, index: int, output_dir: str, error: str) -> None:
+    def _on_save_failed(
+        self,
+        task: str,
+        index: int,
+        output_dir: str,
+        error_kind: str,
+        error: str,
+    ) -> None:
         quality = Path(output_dir).parent.name
         request = None
         if quality in QUALITY_DIRS:
-            self._release_reserved(task, index, quality)
             request = self._saving_quality_requests.pop((task, quality, index), None)
         if request is not None:
-            request = self._prepare_quality_retry_request(request)
-            if self._can_restore_quality_request():
-                self._restore_quality_request(
-                    request,
-                    f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
-                    f"{task}/{quality}/{index}",
-                )
+            if request.local_cache_dir:
+                if self._cache_retry_needs_reencode(request, error_kind):
+                    self._release_reserved(task, index, quality)
+                    if error_kind == SAVE_ERROR_FINAL_CONFLICT:
+                        self._refresh_next_episode_index(task, quality)
+                    else:
+                        self._remember_saved_episode(task, quality, index)
+                    self._cleanup_request_cache(request)
+                    request = self._prepare_quality_retry_request(
+                        request,
+                        preferred_quality=quality if error_kind == SAVE_ERROR_FINAL_CONFLICT else None,
+                    )
+                    message = (
+                        "本地缓存不可重试或目标 index 已存在，episode 已恢复到 JUDGING；"
+                        "再次按 h/l/f 会重新分配 index 并重新保存。"
+                    )
+                    if self._can_restore_quality_request():
+                        self._restore_quality_request(request, message)
+                    else:
+                        self._deferred_quality_retry_requests.append(request)
+                        self.status_changed.emit(message)
+                else:
+                    request = replace(request, publish_from_cache=True)
+                    if self._can_restore_quality_request():
+                        self._restore_quality_request(
+                            request,
+                            "NAS 发布失败，但本地缓存已保留。episode 已恢复到 JUDGING；"
+                            f"再次按原质量键可重试发布，按 d 会丢弃本地缓存: "
+                            f"{task}/{quality}/{index}",
+                        )
+                    else:
+                        self._deferred_quality_retry_requests.append(request)
+                        self.status_changed.emit(
+                            "NAS 发布失败，本地缓存已保留；当前采集处理完后会恢复到 JUDGING "
+                            f"以便重试发布: {task}/{quality}/{index}"
+                        )
             else:
-                self._deferred_quality_retry_requests.append(request)
-                self.status_changed.emit(
-                    f"后台保存失败，已暂存待重试 episode；当前采集处理完后会恢复到 JUDGING: "
-                    f"{task}/{quality}/{index}"
-                )
+                self._release_reserved(task, index, quality)
+                request = self._prepare_quality_retry_request(request)
+                if self._can_restore_quality_request():
+                    self._restore_quality_request(
+                        request,
+                        f"保存失败，episode 已恢复到 JUDGING，可重新按 h/l/f 或按 d 丢弃: "
+                        f"{task}/{quality}/{index}",
+                    )
+                else:
+                    self._deferred_quality_retry_requests.append(request)
+                    self.status_changed.emit(
+                        f"后台保存失败，已暂存待重试 episode；当前采集处理完后会恢复到 JUDGING: "
+                        f"{task}/{quality}/{index}"
+                    )
         elif self._active_task is None:
             self._active_state = "idle"
             self.active_episode_changed.emit(task, index, "save_failed")
@@ -752,15 +894,36 @@ class CaptureController(QtCore.QObject):
             return
 
         request = self._pending_quality_request
-        index = self._allocate_episode_index(request.task, quality)
-        metadata = dict(request.metadata)
-        metadata["quality"] = quality
-        request = replace(
-            request,
-            index=index,
-            quality=quality,
-            metadata=metadata,
+        retry_publish = bool(
+            request.local_cache_dir
+            and request.publish_from_cache
+            and request.quality == quality
         )
+        if retry_publish:
+            index = request.index
+            metadata = dict(request.metadata)
+            metadata["quality"] = quality
+            request = replace(
+                request,
+                metadata=metadata,
+                publish_from_cache=True,
+            )
+        else:
+            if request.local_cache_dir:
+                if request.quality in QUALITY_DIRS:
+                    self._release_reserved(request.task, request.index, request.quality)
+                self._cleanup_request_cache(request)
+            index = self._allocate_episode_index(request.task, quality)
+            metadata = dict(request.metadata)
+            metadata["quality"] = quality
+            request = replace(
+                request,
+                index=index,
+                quality=quality,
+                metadata=metadata,
+                local_cache_dir="",
+                publish_from_cache=False,
+            )
         request_key = (request.task, quality, request.index)
         self._saving_quality_requests[request_key] = request
         self._pending_quality_request = None
@@ -768,15 +931,25 @@ class CaptureController(QtCore.QObject):
         self._active_index = None
         self._active_state = "saving"
         self.active_episode_changed.emit(request.task, request.index, "saving")
-        self.status_changed.emit(
-            f"episode {request.task}/{quality}/{request.index} 已进入后台保存队列"
-        )
+        if retry_publish:
+            self.status_changed.emit(
+                f"episode {request.task}/{quality}/{request.index} 正在重试发布本地缓存到 NAS"
+            )
+        else:
+            self.status_changed.emit(
+                f"episode {request.task}/{quality}/{request.index} 已进入后台保存队列"
+            )
         try:
             self.saver.enqueue(request)
         except Exception as exc:
             self._saving_quality_requests.pop(request_key, None)
-            self._release_reserved(request.task, request.index, quality)
-            request = self._prepare_quality_retry_request(request)
+            if not retry_publish:
+                self._release_reserved(request.task, request.index, quality)
+            request = (
+                replace(request, publish_from_cache=True)
+                if request.local_cache_dir
+                else self._prepare_quality_retry_request(request)
+            )
             self._pending_quality_request = request
             self._active_task = request.task
             self._active_index = request.index
@@ -810,14 +983,94 @@ class CaptureController(QtCore.QObject):
         )
         return True
 
-    def _prepare_quality_retry_request(self, request: EpisodeSaveRequest) -> EpisodeSaveRequest:
+    def _prepare_quality_retry_request(
+        self,
+        request: EpisodeSaveRequest,
+        preferred_quality: str | None = None,
+    ) -> EpisodeSaveRequest:
         metadata = dict(request.metadata)
         metadata.pop("quality", None)
+        if preferred_quality in QUALITY_DIRS:
+            index = self._cached_next_episode_index(request.task, preferred_quality)
+        else:
+            index = self._next_display_episode_index(request.task)
         return replace(
             request,
-            index=self._next_display_episode_index(request.task),
+            index=index,
             quality="",
             metadata=metadata,
+            local_cache_dir="",
+            publish_from_cache=False,
+        )
+
+    def _cleanup_request_cache(self, request: EpisodeSaveRequest) -> None:
+        if not request.local_cache_dir:
+            return
+        cache_dir = Path(request.local_cache_dir).expanduser()
+        session_dir = cache_dir
+        for _ in request.relative_episode_dir.parts:
+            session_dir = session_dir.parent
+        if session_dir.exists():
+            shutil.rmtree(session_dir, ignore_errors=True)
+
+    def _cache_retry_needs_reencode(self, request: EpisodeSaveRequest, error_kind: str) -> bool:
+        try:
+            cache_missing = not Path(request.local_cache_dir).expanduser().is_dir()
+        except OSError:
+            cache_missing = True
+        final_conflict = error_kind == SAVE_ERROR_FINAL_CONFLICT
+        cache_missing = cache_missing or error_kind == SAVE_ERROR_CACHE_MISSING
+        return cache_missing or final_conflict
+
+    def _remember_saved_episode(self, task: str, quality: str, index: int) -> None:
+        if task and task not in self._task_cache:
+            self._task_cache = sorted([*self._task_cache, task])
+            self._task_cache_at = time.monotonic()
+        cache_key = (task, quality)
+        cached = self._index_cache.get(cache_key)
+        cached_next = cached[1] if cached is not None else 0
+        self._index_cache[cache_key] = (
+            time.monotonic(),
+            max(cached_next, int(index) + 1),
+        )
+
+    def _reserve_stale_cache_indices(self) -> int:
+        saving_root = _record_cache_root() / ".saving"
+        reserved_count = 0
+        try:
+            sessions = [path for path in saving_root.iterdir() if path.is_dir()]
+        except OSError:
+            return 0
+        for session in sessions:
+            try:
+                task_dirs = [path for path in session.iterdir() if path.is_dir()]
+            except OSError:
+                continue
+            for task_dir in task_dirs:
+                task = task_dir.name
+                if task in {"", ".", ".."}:
+                    continue
+                for quality in QUALITY_DIRS:
+                    quality_dir = task_dir / quality
+                    if not quality_dir.is_dir():
+                        continue
+                    try:
+                        index_dirs = [path for path in quality_dir.iterdir() if path.is_dir()]
+                    except OSError:
+                        continue
+                    for index_dir in index_dirs:
+                        if index_dir.name.isdigit():
+                            self._reserved.setdefault((task, quality), set()).add(int(index_dir.name))
+                            reserved_count += 1
+        return reserved_count
+
+    def _emit_stale_cache_notice(self) -> None:
+        if self._stale_cache_notice_emitted or self._stale_cache_count <= 0:
+            return
+        self._stale_cache_notice_emitted = True
+        self.status_changed.emit(
+            f"检测到 {self._stale_cache_count} 个未发布的本地缓存 episode，"
+            f"已临时保留对应编号避免覆盖；缓存根目录: {_record_cache_root() / '.saving'}"
         )
 
 
@@ -825,6 +1078,33 @@ def _selected_camera_names(options: CaptureOptions) -> List[str]:
     if options.camera_names:
         return list(options.camera_names)
     return list(DEFAULT_CAMERAS.keys())
+
+
+def _record_cache_root() -> Path:
+    configured = os.environ.get(CACHE_ROOT_ENV, "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_CACHE_ROOT
+
+
+def _expected_nas_root(path: Path) -> Path | None:
+    nas_root = Path.home() / "Desktop" / "Muka_NAS"
+    try:
+        path.expanduser().absolute().relative_to(nas_root.absolute())
+    except ValueError:
+        return None
+    return nas_root
+
+
+def _is_mount_path(path: Path) -> bool:
+    target = path.expanduser().absolute().as_posix()
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return path.is_mount()
+    for line in lines:
+        parts = line.split()
+        if len(parts) >= 5 and parts[4].replace("\\040", " ") == target:
+            return True
+    return False
 
 
 def _fixed_fps_camera_configs(camera_names: Optional[Sequence[str]] = None):

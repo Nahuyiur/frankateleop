@@ -3,7 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONDA_ENV="${FRANKA_CAPTURE_CONDA_ENV:-franka_capture}"
-DEFAULT_OUTPUT_ROOT="$HOME/Desktop/franka_record_data/calibration"
+MUKA_NAS_ROOT="$HOME/Desktop/Muka_NAS"
+DEFAULT_OUTPUT_ROOT="$MUKA_NAS_ROOT/calibration"
 DEFAULT_BOARD="$DEFAULT_OUTPUT_ROOT/targets/charuco_7x5_35mm_26mm.png"
 
 source_conda() {
@@ -21,6 +22,18 @@ source_conda() {
     fi
     # shellcheck source=/dev/null
     source "$CONDA_BASE/etc/profile.d/conda.sh"
+}
+
+require_muka_nas_mounted() {
+    local output_root="$1"
+    case "$output_root" in
+        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
+            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
+                echo "error: NAS is not mounted at $MUKA_NAS_ROOT. Mount Muka_NAS before using default calibration paths." >&2
+                exit 1
+            fi
+            ;;
+    esac
 }
 
 usage() {
@@ -66,9 +79,9 @@ Examples:
   bash 20_pointcloud_calibration.sh self-test
   bash 20_pointcloud_calibration.sh board
   bash 20_pointcloud_calibration.sh capture --camera middle
-  bash 20_pointcloud_calibration.sh solve ~/Desktop/franka_record_data/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS
-  bash 20_pointcloud_calibration.sh apply ~/Desktop/franka_record_data/rgb_pointcloud/0 --camera middle --extrinsic ~/Desktop/franka_record_data/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS/calibration_result.json
-  bash 20_pointcloud_calibration.sh fuse ~/Desktop/franka_record_data/rgb_pointcloud/0 --extrinsic middle=~/Desktop/franka_record_data/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS/calibration_result.json
+  bash 20_pointcloud_calibration.sh solve ~/Desktop/Muka_NAS/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS
+  bash 20_pointcloud_calibration.sh apply ~/Desktop/Muka_NAS/rgb_pointcloud/0 --camera middle --extrinsic ~/Desktop/Muka_NAS/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS/calibration_result.json
+  bash 20_pointcloud_calibration.sh fuse ~/Desktop/Muka_NAS/rgb_pointcloud/0 --extrinsic middle=~/Desktop/Muka_NAS/calibration/middle_eye_to_hand_YYYYMMDD_HHMMSS/calibration_result.json
 EOF
 }
 
@@ -133,6 +146,7 @@ case "$COMMAND" in
         exit 0
         ;;
     latest)
+        require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
         find "$DEFAULT_OUTPUT_ROOT" -maxdepth 1 -type d -name '*_eye_to_hand_*' -printf '%T@ %p\n' 2>/dev/null \
             | sort -nr \
             | head -20 \
@@ -163,6 +177,7 @@ case "$COMMAND" in
         python -m pointcloud.calibration.doctor --env-only
         ;;
     board)
+        require_muka_nas_mounted "$DEFAULT_BOARD"
         mkdir -p "$(dirname "$DEFAULT_BOARD")"
         BOARD_ARGS=("$@")
         if ! has_option "--output" "${BOARD_ARGS[@]}"; then
@@ -171,6 +186,7 @@ case "$COMMAND" in
         python -m pointcloud.calibration.targets "${BOARD_ARGS[@]}"
         ;;
     print-board)
+        require_muka_nas_mounted "$DEFAULT_BOARD"
         mkdir -p "$(dirname "$DEFAULT_BOARD")"
         BOARD_ARGS=("$@")
         if ! has_option "--output" "${BOARD_ARGS[@]}"; then
@@ -179,6 +195,7 @@ case "$COMMAND" in
         python -m pointcloud.calibration.targets "${BOARD_ARGS[@]}"
         ;;
     capture)
+        require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
         mkdir -p "$DEFAULT_OUTPUT_ROOT"
         python -m pointcloud.calibration.capture_samples --output-root "$DEFAULT_OUTPUT_ROOT" "$@"
         ;;
