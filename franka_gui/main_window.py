@@ -14,18 +14,25 @@ import numpy as np
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from franka_capture.config.fr3_single import DEFAULT_CAMERAS
+
 from .capture_controller import (
     FAILURE_DIR,
     HIGH_QUALITY_DIR,
     LOW_QUALITY_DIR,
     CaptureController,
 )
+from .keyframe_snapshot import KEYFRAME_DIR_NAME, save_snapshot_frames
 from .process_manager import ProcessManager
 from .replay_launcher import (
     ReplayEpisodeInfo,
     inspect_replay_input,
     validate_replay_target,
 )
+
+# Display at about 15 Hz while the recording path remains fixed at 30 Hz.
+# This halves GUI conversion/paint work without dropping recorded frames.
+PREVIEW_POLL_INTERVAL_MS = 66
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,11 @@ class CameraView(QtWidgets.QFrame):
         self._last_rgb = rgb
         self._refresh_pixmap()
 
+    def copy_current_rgb(self) -> Optional[np.ndarray]:
+        if self._last_rgb is None:
+            return None
+        return np.ascontiguousarray(self._last_rgb.copy())
+
     def resizeEvent(self, event: QtGui.QResizeEvent) -> None:
         super().resizeEvent(event)
         if self._last_rgb is not None:
@@ -109,6 +121,8 @@ class MainWindow(QtWidgets.QMainWindow):
     _tasks_loaded = QtCore.pyqtSignal(list, str)
     _disk_loaded = QtCore.pyqtSignal(object)
     _next_indices_loaded = QtCore.pyqtSignal(str, dict)
+    _snapshot_saved = QtCore.pyqtSignal(str)
+    _snapshot_failed = QtCore.pyqtSignal(str)
 
     def __init__(
         self,
@@ -128,6 +142,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.camera_views: Dict[str, CameraView] = {}
         self.saved_count = 0
         self._episode_state = "idle"
+        self._local_save_queue_count = 0
         self._closing = False
         self._replay_process: Optional[QtCore.QProcess] = None
         self._replay_log_dialog: Optional[QtWidgets.QDialog] = None
@@ -135,9 +150,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tasks_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-tasks")
         self._index_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-index")
         self._disk_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gui-disk")
+        self._snapshot_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="gui-keyframe-save",
+        )
         self._tasks_future: Optional[Future] = None
         self._disk_future: Optional[Future] = None
         self._next_indices_future: Optional[Future] = None
+        self._snapshot_future: Optional[Future] = None
         self._next_indices_task = ""
         self._fixed_output_root = str(Path.home() / "Desktop" / "Muka_NAS")
         self.controller.options.output_root = self._fixed_output_root
@@ -157,11 +177,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_tasks()
         self._load_form_state()
         self._connect_form_state_signals()
-        self.disk_label.setText("NAS disk usage: idle check pending")
+        self.disk_label.setText("Local capture disk: idle check pending")
 
         self.disk_timer = QtCore.QTimer(self)
         self.disk_timer.timeout.connect(self._refresh_disk)
         self.disk_timer.start(60000)
+        self.preview_timer = QtCore.QTimer(self)
+        self.preview_timer.timeout.connect(self._poll_preview)
+        self.preview_timer.start(PREVIEW_POLL_INTERVAL_MS)
+        self.sync_timer = QtCore.QTimer(self)
+        self.sync_timer.timeout.connect(self._refresh_sync_backlog)
+        self.sync_timer.start(5000)
+        self._refresh_sync_backlog()
 
         QtCore.QTimer.singleShot(250, self.controller.start_preview)
         app = QtWidgets.QApplication.instance()
@@ -187,6 +214,14 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
+        if self.controller.has_open_episode_transition():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "采集状态切换中",
+                "当前 episode 正在开始、结束或丢弃，请等待状态切换完成后再关闭。",
+            )
+            event.ignore()
+            return
         if self._is_replay_running():
             QtWidgets.QMessageBox.warning(
                 self,
@@ -206,6 +241,14 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
+        if self._snapshot_future is not None and not self._snapshot_future.done():
+            QtWidgets.QMessageBox.warning(
+                self,
+                "仍在保存相机帧",
+                "当前相机帧正在写入 NAS。请等待完成后再关闭。",
+            )
+            event.ignore()
+            return
         deferred_retries = self.controller.deferred_quality_retry_count()
         if deferred_retries > 0:
             QtWidgets.QMessageBox.warning(
@@ -217,13 +260,22 @@ class MainWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         self._closing = True
-        self.controller.shutdown()
-        for future in (self._tasks_future, self._next_indices_future, self._disk_future):
+        if not self.controller.shutdown():
+            self._closing = False
+            event.ignore()
+            return
+        for future in (
+            self._tasks_future,
+            self._next_indices_future,
+            self._disk_future,
+            self._snapshot_future,
+        ):
             if future is not None:
                 future.cancel()
         _shutdown_executor(self._tasks_executor)
         _shutdown_executor(self._index_executor)
         _shutdown_executor(self._disk_executor)
+        _shutdown_executor(self._snapshot_executor)
         self.process_manager.stop_stack_blocking()
         app = QtWidgets.QApplication.instance()
         if app is not None:
@@ -283,7 +335,10 @@ class MainWindow(QtWidgets.QMainWindow):
         elif key == QtCore.Qt.Key.Key_D:
             self.controller.discard()
         elif key == QtCore.Qt.Key.Key_K:
-            self.controller.add_keyframe()
+            if self._episode_state == "recording":
+                self.controller.add_keyframe()
+            else:
+                self._save_current_frame()
         elif key == QtCore.Qt.Key.Key_H:
             self.controller.mark_high_quality()
         elif key == QtCore.Qt.Key.Key_L:
@@ -513,6 +568,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.discard_btn.setObjectName("Danger")
         self.keyframe_btn = QtWidgets.QPushButton("关键帧")
         self.keyframe_btn.setObjectName("Purple")
+        self.save_frame_btn = QtWidgets.QPushButton("保存帧")
+        self.save_frame_btn.setObjectName("Neutral")
         self.high_quality_btn = QtWidgets.QPushButton("高质量 H")
         self.high_quality_btn.setObjectName("Success")
         self.low_quality_btn = QtWidgets.QPushButton("低质量 L")
@@ -523,6 +580,7 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.pause_btn)
         layout.addWidget(self.end_btn)
         layout.addWidget(self.discard_btn)
+        layout.addWidget(self.save_frame_btn)
         layout.addWidget(self.keyframe_btn)
         layout.addWidget(self.high_quality_btn)
         layout.addWidget(self.low_quality_btn)
@@ -603,7 +661,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_episode = QtWidgets.QLabel("当前 episode: -")
         self.frame_count = QtWidgets.QLabel("当前帧数: 0")
         self.saved_episodes = QtWidgets.QLabel("已保存: 0")
-        self.save_queue = QtWidgets.QLabel("保存队列: 0")
+        self.save_queue = QtWidgets.QLabel("本地保存队列: 0")
         for label in (
             self.stack_state,
             self.capture_state,
@@ -624,7 +682,7 @@ class MainWindow(QtWidgets.QMainWindow):
         hint = QtWidgets.QLabel(
             "快捷键:\ns 开始/继续, w 暂停, e/q 结束待分层\n"
             "h 高质量保存, l 低质量保存, f 失败保存\n"
-            "d 丢弃, k 关键帧"
+            "d 丢弃, k 录制中标记关键帧/非录制保存帧"
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -669,6 +727,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pause_btn.clicked.connect(self.controller.pause)
         self.end_btn.clicked.connect(self.controller.finish)
         self.discard_btn.clicked.connect(self.controller.discard)
+        self.save_frame_btn.clicked.connect(self._save_current_frame)
         self.keyframe_btn.clicked.connect(self.controller.add_keyframe)
         self.high_quality_btn.clicked.connect(self.controller.mark_high_quality)
         self.low_quality_btn.clicked.connect(self.controller.mark_low_quality)
@@ -676,14 +735,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_task_btn.clicked.connect(self._create_task)
         self.task_combo.currentTextChanged.connect(self._update_next_path)
 
-        self.controller.preview_frame.connect(self._update_preview)
         self.controller.status_changed.connect(self._set_status)
         self.controller.error.connect(self._show_error)
         self.controller.cameras_ready.connect(self._setup_camera_views)
         self.controller.active_episode_changed.connect(self._active_episode_changed)
         self.controller.recording_frame_count.connect(lambda count: self.frame_count.setText(f"当前帧数: {count}"))
-        self.controller.save_queue_changed.connect(lambda count: self.save_queue.setText(f"保存队列: {count}"))
+        self.controller.save_queue_changed.connect(self._save_queue_changed)
         self.controller.episode_saved.connect(self._episode_saved)
+        self._snapshot_saved.connect(self._on_snapshot_saved)
+        self._snapshot_failed.connect(self._on_snapshot_failed)
         self._tasks_loaded.connect(self._apply_tasks)
         self._disk_loaded.connect(self._apply_disk_usage)
         self._next_indices_loaded.connect(self._apply_next_indices)
@@ -724,6 +784,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if not _is_valid_task_name(task):
             self._show_error("任务名称不能为 . 或 ..，也不能包含 /、\\ 或空字符")
             return
+        if task == KEYFRAME_DIR_NAME:
+            self._show_error(f"任务名称 {KEYFRAME_DIR_NAME!r} 保留给相机帧保存目录。")
+            return
         instruction = self.instruction_edit.toPlainText().strip()
         if not instruction:
             self._show_error("Text instruction 不能为空")
@@ -744,7 +807,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._episode_state in {"recording", "paused", "quality_pending"}:
             self._show_error("录制、暂停或等待分层中不能重启预览，请先保存分层或丢弃当前 episode。")
             return
-        self.controller.stop_preview()
+        if not self.controller.stop_preview():
+            return
         self.controller.start_preview()
 
     def _setup_camera_views(self, names) -> None:
@@ -757,7 +821,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 item.widget().setParent(None)
         self.camera_views.clear()
         if not names:
-            placeholder = QtWidgets.QLabel("没有检测到可用 RealSense 相机\n仍可录制机器人状态")
+            placeholder = QtWidgets.QLabel("没有检测到可用 RealSense 相机\n无法开始录制")
             placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             placeholder.setMinimumSize(520, 320)
             placeholder.setStyleSheet(
@@ -818,14 +882,90 @@ class MainWindow(QtWidgets.QMainWindow):
             self.camera_grid.addWidget(view, row, col, 1, 3)
             self.camera_grid.setRowStretch(row, 1)
 
+    def _poll_preview(self) -> None:
+        frames = self.controller.take_preview_frame()
+        if frames is not None:
+            self._update_preview(frames)
+
     def _update_preview(self, frames: Dict[str, np.ndarray]) -> None:
         for name, rgb in frames.items():
             view = self.camera_views.get(name)
             if view is not None:
                 view.update_image(rgb)
 
+    def _save_current_frame(self) -> None:
+        if self._guard_replay_running("Replay 运行中不能保存相机帧。"):
+            return
+        if self._episode_state == "recording":
+            self._set_status("录制中请使用 k 添加 episode 关键帧；保存帧按钮已禁用。")
+            return
+        if self._snapshot_future is not None and not self._snapshot_future.done():
+            self._set_status("上一组相机帧仍在保存，请稍等。")
+            return
+        output_root = Path(self._fixed_output_root).expanduser()
+        if not output_root.is_dir() or not os.path.ismount(output_root):
+            self._show_error(
+                f"NAS 未挂载到 {output_root}；已拒绝保存相机帧，避免误写入本地目录。"
+            )
+            return
+
+        expected_names = tuple(self.controller.options.camera_names or DEFAULT_CAMERAS.keys())
+        frames: Dict[str, np.ndarray] = {}
+        missing = []
+        for name in expected_names:
+            view = self.camera_views.get(name)
+            rgb = view.copy_current_rgb() if view is not None else None
+            if rgb is None:
+                missing.append(name)
+            else:
+                frames[name] = rgb
+        if missing:
+            self._show_error(f"以下相机尚无可保存画面: {missing}。请等待预览恢复后重试。")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self._set_status(f"正在保存相机帧: keyframe/{timestamp}")
+        self._snapshot_future = self._snapshot_executor.submit(
+            save_snapshot_frames,
+            self._fixed_output_root,
+            frames,
+            timestamp=timestamp,
+        )
+        self._update_save_frame_enabled()
+        self._snapshot_future.add_done_callback(self._snapshot_future_done)
+
+    def _snapshot_future_done(self, future: Future) -> None:
+        try:
+            output_dir = future.result()
+        except Exception as exc:
+            self._snapshot_failed.emit(str(exc))
+            return
+        self._snapshot_saved.emit(str(output_dir))
+
+    def _on_snapshot_saved(self, output_dir: str) -> None:
+        self._snapshot_future = None
+        self._update_save_frame_enabled()
+        self._set_status(f"相机帧已保存: {_display_output_path(output_dir, self._fixed_output_root)}")
+
+    def _on_snapshot_failed(self, message: str) -> None:
+        self._snapshot_future = None
+        self._update_save_frame_enabled()
+        self._show_error(f"保存相机帧失败: {message}")
+
+    def _update_save_frame_enabled(self) -> None:
+        if not hasattr(self, "save_frame_btn"):
+            return
+        busy = self._snapshot_future is not None and not self._snapshot_future.done()
+        self.save_frame_btn.setEnabled(
+            not self._closing
+            and not self._is_replay_running()
+            and self._episode_state != "recording"
+            and not busy
+        )
+
     def _active_episode_changed(self, task: str, index: int, state: str) -> None:
         self._episode_state = state
+        self._update_save_frame_enabled()
         if state == "recording":
             self._set_config_controls_enabled(False)
             self._set_quality_controls_enabled(False)
@@ -856,9 +996,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def _episode_saved(self, task: str, index: int, output_dir: str, frames: int) -> None:
         self.saved_count += 1
         self.saved_episodes.setText(f"已保存: {self.saved_count}")
-        self.active_episode.setText(f"最近保存: {_display_output_path(output_dir, self._fixed_output_root)}, frames={frames}")
+        if self._episode_state not in {"recording", "paused", "quality_pending", "finishing"}:
+            prefix = (
+                "NAS 已保存: "
+                if self.controller.options.direct_to_output_root
+                else "本地已保存，等待 NAS 同步: "
+            )
+            self.active_episode.setText(
+                prefix + f"{_display_output_path(output_dir, self._fixed_output_root)}, frames={frames}"
+            )
         self._refresh_tasks()
         self._update_next_path()
+        self._refresh_sync_backlog()
+
+    def _save_queue_changed(self, count: int) -> None:
+        self._local_save_queue_count = int(count)
+        self._refresh_sync_backlog()
+
+    def _refresh_sync_backlog(self) -> None:
+        pending_sync = self.controller.pending_sync_count()
+        if self.controller.options.direct_to_output_root:
+            text = f"NAS 保存中: {self._local_save_queue_count}"
+            if pending_sync:
+                text += f" | 旧 outbox 待同步: {pending_sync}"
+            self.save_queue.setText(text)
+            return
+        self.save_queue.setText(
+            f"本地保存: {self._local_save_queue_count} | 待 NAS 同步: {pending_sync}"
+        )
 
     def _stack_state_changed(self, state: str) -> None:
         self.stack_state.setText(f"机器人栈: {state}")
@@ -1118,6 +1283,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.pause_btn,
             self.end_btn,
             self.discard_btn,
+            self.save_frame_btn,
             self.keyframe_btn,
             self.new_task_btn,
         ):
@@ -1126,6 +1292,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_config_controls_enabled(False)
             self._set_quality_controls_enabled(False)
             return
+        self._update_save_frame_enabled()
         config_enabled = self._episode_state not in {"recording", "paused", "quality_pending"}
         self._set_config_controls_enabled(config_enabled)
         self._set_quality_controls_enabled(self._episode_state == "quality_pending")

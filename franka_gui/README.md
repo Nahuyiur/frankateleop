@@ -49,30 +49,37 @@ A/B/C 三个 GUI 会分别记住上次填写的任务名、`Text instruction` �
 /home/pnp/Desktop/Muka_NAS/<task>/<quality>/<episode_index>/
 ```
 
-GUI 采集模式固定使用这个根目录。A 左臂单臂 GUI 固定使用
-`left_wrist/left/middle` 三路相机；B 右臂单臂 GUI 固定使用
-`middle/right/right_wrist` 三路相机；C 双臂 GUI 使用全部配置相机。
-新增任务时只需要输入任务名称；实际 NAS 目录会在第一次保存该任务数据时创建：
+A/B/C 默认直接在 NAS 的隐藏 staging 目录录制：
+
+```text
+/home/pnp/Desktop/Muka_NAS/.recording/<uuid>/episode/
+```
+
+视频队列仍有固定上限，并在独立后台线程编码，因此不会随着 episode 时长无限占用
+内存。按 `h/l/f` 后，轻量 action/state trajectory 和 metadata 会写入同一 staging
+目录；所有文件写完后，目录会原子 rename 成最终 `<task>/<quality>/<index>/`。因此
+NAS 上只会看到完整 episode，不会看到半写入的数字目录。NAS 未挂载时 GUI 会拒绝开始
+录制，避免误写进本地同名目录。
+
+A 左臂单臂 GUI 固定使用 `left_wrist/left/middle` 三路相机；B 右臂单臂 GUI 固定使用
+`middle/right/right_wrist` 三路相机；C 双臂 GUI 使用全部配置相机。新增任务时只需要
+输入任务名称；实际 NAS 目录会在第一次保存该任务数据时创建：
 
 ```text
 /home/pnp/Desktop/Muka_NAS/<task>/
 ```
 
-保存实现是两阶段的：按 `h/l/f` 后，后台线程先把视频、`pkl.gz`、
-`metadata.json` 等完整写到本机缓存，再复制到 NAS 的 `.partial-*` 目录，
-最后 rename 成上面的最终 episode 目录。默认本地缓存根目录是：
-
-```text
-/home/pnp/Desktop/franka_record_cache/
-```
-
-可用 `FRANKA_GUI_RECORD_CACHE_ROOT` 覆盖。NAS 发布成功后，对应本地缓存会自动删除；
-如果 NAS 写入失败，GUI 会报错并保留本地缓存路径，避免 episode 丢失。最终 NAS
-目录结构和 `metadata.json` 里的 `relative_episode_dir` 不变。GUI 启动时如果发现
-上次崩溃或断电留下的 `.saving` 本地缓存，会临时保留对应编号避免覆盖，并在状态栏
-提示缓存根目录。
+如需使用旧的本地缓存加延迟同步模式，可在启动前设置
+`FRANKA_GUI_STORAGE_MODE=local-outbox`。该模式会使用
+`/home/pnp/Desktop/franka_record_cache/outbox/<uuid>/` 和 `franka_sync`；它不是
+A/B/C 的默认模式。
 
 GUI 采集频率固定为 `30 Hz`。界面不提供 FPS 切换，启动脚本也不接受 FPS 覆盖。
+GUI 画面只拉取最新帧并以约 `15 Hz` 刷新，旧预览帧不会排队；这只降低界面绘制
+开销，不改变写入相机 MP4 和 action 的 `30 Hz` 采集频率。
+
+任一路配置相机缺失或在 episode 中掉线时，GUI 会拒绝开始或暂停当前 episode；
+保存时只保留掉线前相机和 action 都完整的前缀，绝不会静默缩减该 episode 的相机集合。
 
 任务名变化后，中间面板会显示 `下一条路径`，用于确认下一条数据会保存到哪个
 `task/quality/index`。当前质量目录为 `High_Quality`、`Low_Quality` 和
@@ -104,8 +111,9 @@ GUI 采集频率固定为 `30 Hz`。界面不提供 FPS 切换，启动脚本也
 7. 在 `JUDGING` 状态下，按 `h` 保存到 `High_Quality`，按 `l` 保存到
    `Low_Quality`，按 `f` 保存到 `Failure`。`Failure` 用于值得保留的失败
    轨迹；明显误操作、无训练价值的数据仍然按 `d` 丢弃。
-8. 按 `h/l/f` 后，episode 会进入后台保存队列；相机预览会继续刷新。此时可以立刻
-   修改 instruction 并按 `s` 录下一条数据。关闭 GUI 时仍会等待后台保存队列完成。
+8. 按 `h/l/f` 后，episode 会进入后台 NAS staging 保存队列；相机预览会继续刷新。
+   完整写入后会原子发布到最终目录，可以立刻修改 instruction 并按 `s` 录下一条数据。
+   关闭 GUI 会等待进行中的保存安全收尾。
 
 左侧 `Replay` 按钮用于从 GUI 启动已有 replay 脚本。选择 episode 目录、
 `metadata.json` 或 `.pkl.gz` 后，GUI 会先检查数据类型是否匹配当前窗口：
@@ -131,9 +139,21 @@ h: 保存到 High_Quality
 l: 保存到 Low_Quality
 f: 保存到 Failure
 d: 丢弃当前 episode，不写入任何质量目录
-k: 添加关键帧
+k: 录制中添加关键帧；非录制时保存当前所有相机帧
 q: 结束当前 episode，进入 JUDGING
 ```
+
+左侧 `保存帧` 按钮与非录制状态下的 `k` 等价。它会要求当前 GUI 配置的每一路
+相机都已有预览画面，并将原始分辨率 RGB 图像异步保存到：
+
+```text
+/home/pnp/Desktop/Muka_NAS/keyframe/<YYYYMMDD_HHMMSS_microseconds>/
+  <camera_name>.png
+```
+
+该目录不属于 task/episode 数据集，不影响录制、质量分层、replay 或 validator。
+写入过程先使用隐藏临时目录，所有 PNG 完成后才原子发布最终时间戳目录；保存失败不会
+保留不完整的最终截图目录。录制中 `k` 保持原有关键帧标记语义，`保存帧` 按钮会禁用。
 
 ## 输出格式
 
@@ -153,7 +173,9 @@ GUI 保存的数据保持和当前 `franka_capture` 兼容：
 `relative_episode_dir`，其中 `quality` 为 `High_Quality`、`Low_Quality`
 或 `Failure`。
 
-单臂 `pkl.gz` 里每帧包含：
+GUI 新采集使用 `franka_single_v3` / `franka_dual_v3`。`pkl.gz` 只保存逐帧
+action、state、timestamp 和 `frame_index`，不再重复保存 RGB 数组；图像由同目录
+相机 MP4 按 frame index 对齐。单臂每帧包含：
 
 ```text
 schema_version
@@ -164,11 +186,15 @@ gripper_01closedness
 gripper_width
 gripper_target_width
 timestamp
-<camera_name>_image
 ```
 
-双臂 GUI 使用 `franka_dual_v2`，每帧保存 `left_*` 和 `right_*`
-机器人字段，并保存全部 `<camera_name>_image`。
+双臂每帧保存 `left_*` 和 `right_*` 机器人字段。旧版 v2 episode 不修改；replay 和
+validator 支持单/双臂 v2/v3。现有单臂 LeRobot/HDF5 转换和 downsample 会继续读取
+旧版内嵌图像，也能从新版 MP4 恢复旧消费者需要的 BGR 图像；它们原本就不负责双臂转换。
+
+相机 MP4 仍保存相机输入的完整分辨率，当前配置是 `640x480 @ 30 FPS`，没有在
+采集链路中缩放。`metadata.json.image_storage.cameras` 会记录每路视频的宽、高、
+通道数和帧数，validator 会逐项核对。
 
 `preview_all.mp4` 是 GUI 额外保存的低分辨率横向拼接预览视频，用于快速回看；
 它不改变 `pkl.gz` 中的逐帧数据。

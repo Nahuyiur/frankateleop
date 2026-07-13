@@ -22,21 +22,13 @@ source_conda() {
     source "$CONDA_BASE/etc/profile.d/conda.sh"
 }
 
-require_muka_nas_mounted() {
-    local output_root="$1"
-    case "$output_root" in
-        "$MUKA_NAS_ROOT"|"$MUKA_NAS_ROOT"/*)
-            if ! mountpoint -q "$MUKA_NAS_ROOT"; then
-                echo "❌ 错误：NAS 未挂载到 $MUKA_NAS_ROOT，请先挂载 Muka_NAS。" >&2
-                exit 1
-            fi
-            ;;
-    esac
-}
-
 if [[ -z "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" && -f "$DEFAULT_SUDO_PASSWORD_FILE" ]]; then
     export FRANKA_GUI_SUDO_PASSWORD_FILE="$DEFAULT_SUDO_PASSWORD_FILE"
 fi
+
+# Default to NAS staging with an atomic final publish. Set local-outbox only
+# when deliberately using the legacy delayed sync workflow.
+export FRANKA_GUI_STORAGE_MODE="${FRANKA_GUI_STORAGE_MODE:-direct-nas}"
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
     cat <<EOF
@@ -49,7 +41,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 
 A 左臂单臂 GUI 会优先尝试打开相机:
   left_wrist,left,middle
-  如果某路相机未连接或被占用，会跳过缺失相机继续启动。
+  缺失相机时仍可启动预览用于排查，但会拒绝开始录制，避免保存不完整数据。
 
 默认:
   固定录制频率=30 Hz
@@ -57,8 +49,6 @@ A 左臂单臂 GUI 会优先尝试打开相机:
 EOF
     exit 0
 fi
-
-require_muka_nas_mounted "$DEFAULT_OUTPUT_ROOT"
 
 echo ">>> 激活 conda 环境 franka_capture ..."
 source_conda
@@ -96,8 +86,9 @@ fi
 
 echo ">>> 使用仓库根目录 franka_gui ..."
 echo ">>> 默认保存根目录: $DEFAULT_OUTPUT_ROOT"
+echo ">>> 保存模式: ${FRANKA_GUI_STORAGE_MODE}（默认 NAS staging，完成后原子发布）"
 echo ">>> 固定录制频率: 30 Hz"
-echo ">>> A 左臂单臂相机: 优先尝试 left_wrist,left,middle；缺失则跳过"
+echo ">>> A 左臂单臂相机: left_wrist,left,middle；缺失时可预览但禁止录制"
 if [[ -n "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" ]]; then
     echo ">>> sudo 密码文件: $FRANKA_GUI_SUDO_PASSWORD_FILE"
 fi

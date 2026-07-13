@@ -15,7 +15,7 @@ from franka_capture.config.fr3_dual import (
     DEFAULT_LEFT_ROBOT,
     DEFAULT_RECORDING,
     DEFAULT_RIGHT_ROBOT,
-    DUAL_SCHEMA_VERSION,
+    DUAL_VIDEO_SCHEMA_VERSION,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
@@ -262,7 +262,7 @@ def main() -> None:
     def base_metadata():
         return {
             "source": "franka_capture.scripts.record_fr3_dual",
-            "schema_version": DUAL_SCHEMA_VERSION,
+            "schema_version": DUAL_VIDEO_SCHEMA_VERSION,
             "started_at_unix": time.time(),
             "robots": {
                 "left": {
@@ -340,7 +340,7 @@ def main() -> None:
         print(f"Left robot DOFs: {left_sampler.num_dofs}")
         print(f"Right robot DOFs: {right_sampler.num_dofs}")
         print(f"Connected cameras: {camera_names}")
-        print(f"Schema: {DUAL_SCHEMA_VERSION}")
+        print(f"Schema: {DUAL_VIDEO_SCHEMA_VERSION}")
         print(f"Camera FPS: {FIXED_RECORDING_FPS}")
         print(f"Video FPS: {FIXED_RECORDING_FPS}")
         print(f"Task: {args.task}")
@@ -399,7 +399,7 @@ def main() -> None:
             timestamp = time.time()
 
             frame = {
-                "schema_version": DUAL_SCHEMA_VERSION,
+                "schema_version": DUAL_VIDEO_SCHEMA_VERSION,
                 "frame_index": frame_index,
                 "timestamp": timestamp,
                 "loop_start_timestamp": loop_start_timestamp,
@@ -410,9 +410,6 @@ def main() -> None:
             }
             _add_prefixed_fields(frame, "left", left_state)
             _add_prefixed_fields(frame, "right", right_state)
-
-            for name in camera_names:
-                frame[f"{name}_image"] = rgb_frames[name][:, :, ::-1].copy()
 
             writer.append(frame, rgb_frames)
             frame_index += 1

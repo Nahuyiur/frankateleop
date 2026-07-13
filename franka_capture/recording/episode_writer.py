@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import os
 import pickle
 import shutil
 from pathlib import Path
@@ -39,7 +40,13 @@ class _OpenCVVideoWriter:
             self._writer = None
 
 
-def _create_video_writers(output_dir: Path, camera_names: List[str], fps: int):
+def _create_video_writers(
+    output_dir: Path,
+    camera_names: List[str],
+    fps: int,
+    *,
+    low_cpu: bool = False,
+):
     if not camera_names:
         return {}
 
@@ -48,8 +55,28 @@ def _create_video_writers(output_dir: Path, camera_names: List[str], fps: int):
         import imageio_ffmpeg
 
         imageio_ffmpeg.get_ffmpeg_exe()
+        writer_options = {}
+        if low_cpu:
+            writer_options = {
+                "codec": os.environ.get("FRANKA_GUI_VIDEO_CODEC", "libx264"),
+                "pixelformat": "yuv420p",
+                "macro_block_size": 1,
+                "quality": None,
+                "output_params": [
+                    "-preset",
+                    os.environ.get("FRANKA_GUI_VIDEO_PRESET", "ultrafast"),
+                    "-crf",
+                    os.environ.get("FRANKA_GUI_VIDEO_CRF", "18"),
+                    "-threads",
+                    os.environ.get("FRANKA_GUI_VIDEO_THREADS", "1"),
+                ],
+            }
         return {
-            name: imageio.get_writer(str(output_dir / f"{name}.mp4"), fps=fps)
+            name: imageio.get_writer(
+                str(output_dir / f"{name}.mp4"),
+                fps=fps,
+                **writer_options,
+            )
             for name in camera_names
         }
     except Exception as imageio_error:
@@ -88,6 +115,7 @@ class EpisodeWriter:
         self.keyframes: List[int] = [0]
         self.metadata = dict(metadata) if metadata is not None else None
         self._closed = False
+        self._camera_shapes: Dict[str, tuple[int, int, int]] = {}
 
         self._writers = _create_video_writers(
             self.output_dir, self.camera_names, video_fps
@@ -97,11 +125,23 @@ class EpisodeWriter:
         if self._closed:
             raise RuntimeError("Cannot append to a closed EpisodeWriter")
 
+        embedded_images = sorted(key for key in frame if key.endswith("_image"))
+        if embedded_images:
+            raise ValueError(
+                "EpisodeWriter stores RGB only in MP4 files; refusing embedded "
+                f"image fields in pkl: {embedded_images}"
+            )
+
         for name in self.camera_names:
             rgb = rgb_frames.get(name)
             if rgb is None:
-                continue
-            self._writers[name].append_data(np.ascontiguousarray(rgb))
+                raise RuntimeError(f"Missing RGB frame for configured camera: {name}")
+            rgb = np.ascontiguousarray(rgb)
+            shape = tuple(int(value) for value in rgb.shape)
+            expected = self._camera_shapes.setdefault(name, shape)
+            if shape != expected:
+                raise ValueError(f"Camera {name} resolution changed within episode")
+            self._writers[name].append_data(rgb)
         self.frames.append(frame)
 
     def add_keyframe(self) -> int:
@@ -125,11 +165,17 @@ class EpisodeWriter:
             return self.output_dir
 
         self.close_videos()
+        image_storage = self._image_storage()
 
         trajectory_path = self.output_dir / f"{self.index}.pkl.gz"
         with gzip.open(trajectory_path, "wb", compresslevel=1) as f:
             pickle.dump(
-                {"data": self.frames, "keyframes": self.keyframes},
+                {
+                    "data": self.frames,
+                    "keyframes": self.keyframes,
+                    "schema_version": (self.metadata or {}).get("schema_version", ""),
+                    "image_storage": image_storage,
+                },
                 f,
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
@@ -142,6 +188,7 @@ class EpisodeWriter:
             metadata = dict(self.metadata)
             metadata.update(
                 {
+                    "image_storage": image_storage,
                     "task": self.task,
                     "index": self.index,
                     "frame_count": len(self.frames),
@@ -157,6 +204,27 @@ class EpisodeWriter:
 
         self._closed = True
         return self.output_dir
+
+    def _image_storage(self) -> Dict[str, Any]:
+        cameras = {
+            name: {
+                "filename": f"{name}.mp4",
+                "width": self._camera_shapes[name][1],
+                "height": self._camera_shapes[name][0],
+                "channels": self._camera_shapes[name][2],
+                "frame_count": len(self.frames),
+            }
+            for name in self.camera_names
+            if name in self._camera_shapes
+        }
+        return {
+            "type": "video",
+            "frame_alignment": "frame_index",
+            "decoded_color_order": "BGR",
+            "source_color_order": "RGB",
+            "camera_resolution_preserved": True,
+            "cameras": cameras,
+        }
 
     def discard(self) -> Path:
         self.close_videos()

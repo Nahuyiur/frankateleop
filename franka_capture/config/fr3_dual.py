@@ -12,6 +12,7 @@ from franka_capture.config.fr3_single import (
 )
 
 DUAL_SCHEMA_VERSION = "franka_dual_v2"
+DUAL_VIDEO_SCHEMA_VERSION = "franka_dual_v3"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -37,5 +38,6 @@ __all__ = [
     "DEFAULT_LEFT_ROBOT",
     "DEFAULT_RIGHT_ROBOT",
     "DUAL_SCHEMA_VERSION",
+    "DUAL_VIDEO_SCHEMA_VERSION",
     "cameras_as_metadata",
 ]

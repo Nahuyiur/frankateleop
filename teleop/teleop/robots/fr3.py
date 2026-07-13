@@ -196,6 +196,41 @@ class fr3Robot(Robot):
                 "command_joint_state",
             )
 
+    def move_to_joint_positions(
+            self,
+            joint_positions: np.ndarray,
+            gripper_width: Optional[float] = None,
+            gripper_speed: float = GRIPPER_SPEED,
+            gripper_force: float = GRIPPER_FORCE,
+            restart_controller: bool = True,
+            ) -> None:
+        """Move through Polymetis' blocking joint trajectory API."""
+        joints = np.asarray(joint_positions, dtype=float).reshape(-1)
+        if joints.shape != (7,):
+            raise ValueError(f"Expected 7 joint positions, got shape {joints.shape}")
+        if not np.all(np.isfinite(joints)):
+            raise ValueError(f"Invalid joint positions: {joints}")
+
+        desired_joints = torch.tensor(joints, dtype=torch.float32)
+        self.robot.move_to_joint_positions(desired_joints)
+
+        if gripper_width is not None:
+            width = float(np.clip(gripper_width, 0.0, self._max_gripper_width))
+            closedness = 1.0 - width / self._max_gripper_width
+            self.gripper.goto(
+                width=width,
+                speed=gripper_speed,
+                force=gripper_force,
+            )
+            self._remember_gripper_command(
+                closedness,
+                width,
+                "move_to_joint_positions",
+            )
+
+        if restart_controller:
+            self._start_control_mode(self.control_mode)
+
     def command_ee_pose(
             self,
             pose_6d: np.ndarray,

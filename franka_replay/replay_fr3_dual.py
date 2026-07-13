@@ -22,6 +22,7 @@ from .replay_fr3 import (
     load_episode,
     load_episode_metadata,
     resolve_episode_file,
+    validate_arm_replay_fields,
 )
 
 
@@ -185,12 +186,9 @@ def extract_dual_trajectories(frames, timestamps, event_delta) -> Dict[str, ArmT
 
 
 def extract_arm_trajectory(frames, arm: str):
-    joint_key = f"{arm}_joint"
-    joints = np.asarray([frame[joint_key] for frame in frames], dtype=float)
+    joints = validate_arm_replay_fields(frames, arm)
     gripper_commands, gripper_widths = _extract_arm_gripper_command_and_width(frames, arm)
 
-    if joints.ndim != 2 or joints.shape[1] != 7:
-        raise ValueError(f"Expected {arm} joint trajectory shape (N, 7), got {joints.shape}")
     if gripper_widths.ndim != 1 or gripper_widths.shape[0] != joints.shape[0]:
         raise ValueError(f"Invalid {arm} gripper trajectory shape")
 
@@ -218,6 +216,8 @@ def _frame_arm_gripper_command_and_width(frame: Dict[str, Any], arm: str) -> Tup
 
 def _validate_gripper_width(width: float) -> float:
     width = float(width)
+    if not np.isfinite(width):
+        raise ValueError("Recorded gripper target width contains NaN or Inf")
     if width < -1e-4 or width > MAX_GRIPPER_WIDTH + 1e-3:
         raise ValueError(
             "Recorded gripper target width is outside the Franka Hand range: "
@@ -230,6 +230,8 @@ def extract_timestamps(frames) -> np.ndarray:
     timestamps = np.asarray([frame["timestamp"] for frame in frames], dtype=float)
     if timestamps.ndim != 1 or timestamps.shape[0] != len(frames):
         raise ValueError("Invalid timestamp trajectory shape")
+    if not np.all(np.isfinite(timestamps)):
+        raise ValueError("Recorded timestamp contains NaN or Inf")
     if np.any(np.diff(timestamps) < 0):
         raise ValueError("Episode timestamps must be monotonically nondecreasing")
     return timestamps

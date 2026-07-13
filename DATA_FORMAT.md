@@ -11,11 +11,22 @@ bash B_run_right_arm_capture_gui.sh
 bash C_run_dual_arm_capture_gui.sh
 ```
 
-默认保存根目录：
+CLI 默认保存根目录：
 
 ```text
 /home/pnp/Desktop/franka_record_data
 ```
+
+A/B/C GUI 的最终保存根目录是：
+
+```text
+/home/pnp/Desktop/Muka_NAS
+```
+
+A/B/C GUI 默认直接在 NAS 的 `.recording/<uuid>/episode/` 隐藏 staging 目录录制；
+视频、pkl 和 metadata 完整写入后才原子发布为最终 episode 目录。NAS 未挂载时会拒绝
+开始录制，避免误写入本地同名目录。旧的本地 outbox 同步模式可通过
+`FRANKA_GUI_STORAGE_MODE=local-outbox` 显式启用。
 
 最终每条 episode 保存到：
 
@@ -37,8 +48,8 @@ GUI 入口会在保存前要求质量分层，保存路径为：
 
 ```text
 /home/pnp/Desktop/franka_record_data/pick_block/3/
-/home/pnp/Desktop/franka_record_data/pick_block/High_Quality/3/
-/home/pnp/Desktop/franka_record_data/pick_block/Failure/0/
+/home/pnp/Desktop/Muka_NAS/pick_block/High_Quality/3/
+/home/pnp/Desktop/Muka_NAS/pick_block/Failure/0/
 ```
 
 ## Episode 目录结构
@@ -91,6 +102,8 @@ keyframes = obj["keyframes"]
 {
     "data": [frame0, frame1, frame2, ...],
     "keyframes": [0, ...],
+    "schema_version": "franka_single_v3",
+    "image_storage": {...},
 }
 ```
 
@@ -101,11 +114,14 @@ keyframes = obj["keyframes"]
 
 ## 单帧 `frame` 结构
 
-当前每帧保存：
+当前维护的 GUI 与 CLI 录制入口都使用 v3：每帧只保存机器人状态、动作对齐字段和
+时间戳，画面通过同目录 MP4 的相同 `frame_index` 读取。RGB 不会重复写入 pkl。
+旧 v1/v2 历史数据仍可能包含内嵌图像字段。单臂 v3 示例：
 
 ```python
 {
-    "schema_version": "franka_single_v2",
+    "schema_version": "franka_single_v3",
+    "frame_index": i,
     "pose": [x, y, z, rx, ry, rz],
     "joint": [j1, j2, j3, j4, j5, j6, j7],
     "gripper_closedness": continuous_closedness,
@@ -113,12 +129,10 @@ keyframes = obj["keyframes"]
     "gripper_width": actual_width,
     "gripper_target_width": target_width,
     "timestamp": unix_time,
-    "wrist_image": image,
-    "right_image": image,
 }
 ```
 
-如果有多路相机，每路相机会增加一个字段：
+旧 v2 数据仍会为每路相机保存内嵌字段：
 
 ```python
 "<camera_name>_image"
@@ -132,8 +146,9 @@ keyframes = obj["keyframes"]
 "exterior_1_image"
 ```
 
-`schema_version` 缺失的数据视为历史单臂格式；当前新版单臂数据使用
-`franka_single_v2`，双臂数据使用 `franka_dual_v2`。旧 v1 数据仍可由转换和 replay 工具读取。
+`schema_version` 缺失的数据视为历史单臂格式；当前 GUI 与 CLI 都使用
+`franka_single_v3` / `franka_dual_v3`。replay 和 validator 兼容单/双臂旧 v1/v2 及新 v3；现有
+LeRobot/HDF5 转换和 downsample 对单臂 v3 兼容，双臂转换能力没有因此扩展。
 
 ## 字段含义
 
@@ -295,7 +310,7 @@ H x W x 3
 480 x 640 x 3
 ```
 
-注意：
+旧 v2 内嵌图像注意事项：
 
 - `pkl.gz` 里的图像是 OpenCV BGR 顺序。
 - `mp4` 视频文件是从相同帧流写出的 RGB 视频。
@@ -355,8 +370,10 @@ right.mp4
 
 - 视频只保存 RGB 图像。
 - 不保存 depth。
-- 视频主要用于快速查看采集是否成功。
-- 训练或精确读取时，建议以 `pkl.gz` 为准，因为里面有逐帧 robot state 和图像。
+- v2 中视频主要用于快速查看，图像也内嵌在 `pkl.gz`。
+- v3 中 MP4 是唯一 RGB 数据源，`pkl.gz` 保存逐帧 robot state/action/timestamp。
+- v3 相机 MP4 保持采集输入的完整 `640x480 @ 30 FPS`，不做缩放。
+- `metadata.json.image_storage` 记录每路视频的宽、高、通道数和帧数。
 
 ## 当前默认相机配置
 
@@ -407,11 +424,12 @@ franka_capture/config/fr3_single.py
 bash 15_record_bi_arm_pipeline.sh <task>
 ```
 
-双臂 episode 使用 `schema_version = "franka_dual_v2"`，机器人字段使用显式前缀：
+CLI 与 GUI 双臂 episode 都使用 `franka_dual_v3`。两者的
+机器人字段都使用显式前缀，v3 不再在 frame 内重复保存图像：
 
 ```python
 {
-    "schema_version": "franka_dual_v2",
+    "schema_version": "franka_dual_v3",
     "frame_index": i,
     "timestamp": unix_time,
     "left_pose": [x, y, z, rx, ry, rz],
@@ -426,7 +444,6 @@ bash 15_record_bi_arm_pipeline.sh <task>
     "right_gripper_01closedness": right_binary_closedness,
     "right_gripper_width": right_actual_width,
     "right_gripper_target_width": right_target_width,
-    "<camera_name>_image": image,
 }
 ```
 

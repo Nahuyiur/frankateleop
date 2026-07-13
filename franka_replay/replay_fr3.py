@@ -20,6 +20,17 @@ from franka_capture.gripper_fields import (
 
 GRIPPER_BINARY_THRESHOLD = GRIPPER_CLOSED_THRESHOLD
 
+_GRIPPER_FRAME_FIELDS = (
+    "gripper_closedness",
+    "gripper_01closedness",
+    "gripper_closed",
+    "gripper_width",
+    "gripper_target_width",
+    "gripper_command_raw",
+    "gripper_command_timestamp",
+    "gripper",
+)
+
 
 def gripper_width_to_command(width: float) -> float:
     return float(np.clip(1.0 - (float(width) / MAX_GRIPPER_WIDTH), 0.0, 1.0))
@@ -409,21 +420,67 @@ def apply_single_endpoint_defaults(args, metadata: Dict[str, Any], arm_side: str
 
 
 def extract_trajectory(frames):
-    joints = np.asarray([frame["joint"] for frame in frames], dtype=float)
+    joints = validate_arm_replay_fields(frames)
     gripper_commands, gripper_widths = _extract_gripper_command_and_width(frames)
     timestamps = np.asarray([frame["timestamp"] for frame in frames], dtype=float)
 
-    if joints.ndim != 2 or joints.shape[1] != 7:
-        raise ValueError(f"Expected joint trajectory shape (N, 7), got {joints.shape}")
     if gripper_widths.ndim != 1 or gripper_widths.shape[0] != joints.shape[0]:
         raise ValueError("Invalid gripper trajectory shape")
     if timestamps.ndim != 1 or timestamps.shape[0] != joints.shape[0]:
         raise ValueError("Invalid timestamp trajectory shape")
+    _require_finite("timestamp", timestamps)
     if np.any(np.diff(timestamps) < 0):
         raise ValueError("Episode timestamps must be monotonically nondecreasing")
 
     commands = np.concatenate([joints, gripper_commands[:, None]], axis=1)
     return joints, gripper_widths, timestamps, commands
+
+
+def validate_arm_replay_fields(frames, arm: str = "") -> np.ndarray:
+    """Validate recorded arm values before any replay client is constructed."""
+
+    prefix = f"{arm}_" if arm else ""
+    joint_key = f"{prefix}joint"
+    pose_key = f"{prefix}pose"
+    label = arm or "single-arm"
+
+    joints = np.asarray([frame[joint_key] for frame in frames], dtype=float)
+    poses = np.asarray([frame[pose_key] for frame in frames], dtype=float)
+    expected_frames = len(frames)
+    if joints.shape != (expected_frames, 7):
+        raise ValueError(
+            f"Expected {label} joint trajectory shape ({expected_frames}, 7), "
+            f"got {joints.shape}"
+        )
+    if poses.shape != (expected_frames, 6):
+        raise ValueError(
+            f"Expected {label} pose trajectory shape ({expected_frames}, 6), "
+            f"got {poses.shape}"
+        )
+    _require_finite(joint_key, joints)
+    _require_finite(pose_key, poses)
+
+    for frame_index, frame in enumerate(frames):
+        for suffix in _GRIPPER_FRAME_FIELDS:
+            key = f"{prefix}{suffix}"
+            if key not in frame:
+                continue
+            try:
+                value = np.asarray(frame[key], dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"Recorded {key} at frame {frame_index} is not numeric"
+                ) from exc
+            if not np.all(np.isfinite(value)):
+                raise ValueError(
+                    f"Recorded {key} contains NaN or Inf at frame {frame_index}"
+                )
+    return joints
+
+
+def _require_finite(name: str, values: np.ndarray) -> None:
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"Recorded {name} contains NaN or Inf")
 
 
 def _extract_gripper_command_and_width(frames) -> Tuple[np.ndarray, np.ndarray]:
@@ -446,6 +503,8 @@ def _frame_gripper_command_and_width(frame: Dict[str, Any]) -> Tuple[float, floa
 
 def _validate_gripper_width(width: float) -> float:
     width = float(width)
+    if not np.isfinite(width):
+        raise ValueError("Recorded gripper target width contains NaN or Inf")
     if width < -1e-4 or width > MAX_GRIPPER_WIDTH + 1e-3:
         raise ValueError(
             "Recorded gripper target width is outside the Franka Hand range: "

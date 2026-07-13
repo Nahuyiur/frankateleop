@@ -16,6 +16,10 @@ from franka_capture.gripper_fields import (
     frame_gripper_01closedness as _frame_gripper_01closedness,
     frame_gripper_closedness as _frame_gripper_closedness,
 )
+from franka_capture.recording.video_episode_reader import (
+    VideoEpisodeReadError,
+    read_video_episode,
+)
 
 
 CODEBASE_VERSION = "v2.1"
@@ -131,9 +135,16 @@ def load_episode(path: str | Path) -> EpisodeData:
 
     camera_fields = sorted([key for key in frames[0] if key.endswith("_image")])
     if not camera_fields:
-        raise ConversionError(f"{pkl_path} contains no '*_image' camera fields")
+        try:
+            video_episode = read_video_episode(pkl_path, frames)
+        except VideoEpisodeReadError as exc:
+            raise ConversionError(str(exc)) from exc
+        frames = video_episode.frames
+        camera_fields = video_episode.camera_fields
+        camera_shapes = video_episode.camera_shapes
+    else:
+        camera_shapes = {}
 
-    camera_shapes: dict[str, tuple[int, int, int]] = {}
     for idx, frame in enumerate(frames):
         _validate_frame(frame, idx, pkl_path)
         frame_camera_fields = sorted([key for key in frame if key.endswith("_image")])

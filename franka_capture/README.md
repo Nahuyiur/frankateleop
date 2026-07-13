@@ -279,6 +279,7 @@ keyframes.json
 
 ```text
 schema_version
+frame_index
 pose
 joint
 gripper_closedness
@@ -286,7 +287,6 @@ gripper_01closedness
 gripper_width
 gripper_target_width
 timestamp
-{camera_name}_image
 {camera_name}_depth    # 仅当 depth 录制开启
 ```
 
@@ -294,8 +294,9 @@ timestamp
 `gripper_01closedness` 是二值闭合状态，`closedness >= 0.5 -> 1`。
 `gripper_width` 和 `gripper_target_width` 是米单位开口宽度。
 
-视频只保存 RGB，`pkl.gz` 里每帧保存机器人状态和 `{camera_name}_image`。
-其中 `{camera_name}_image` 按迁移包习惯保存为 OpenCV BGR 图像。
+当前录制入口将 RGB 仅写入 `{camera_name}.mp4`；`pkl.gz` 保存状态、动作、时间戳和 `frame_index`。
+同目录 `metadata.json.image_storage` 记录视频文件、尺寸和帧数，RGB 通过相同 `frame_index` 对齐读取。
+旧 v1/v2 episode 才会包含 `{camera_name}_image`（OpenCV BGR）。
 如果开启 depth，`{camera_name}_depth` 保存完整 aligned depth 图，shape 为 `(H, W)`，
 dtype 为 `float32`，单位是米，并且已经对齐到 color 图。
 `pose` 来自 robot node 的真实末端位姿，保存为 `[x, y, z, rx, ry, rz]`。

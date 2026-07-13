@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from franka_capture.config.fr3_single import (
 from .capture_controller import CaptureController, CaptureOptions, FIXED_CAPTURE_FPS
 from .main_window import MainWindow
 from .process_manager import ProcessManager
+from .storage_paths import record_cache_root
+from franka_sync import ensure_sync_daemon
 
 
 def parse_args():
@@ -45,6 +48,15 @@ def parse_args():
         help=(
             "Name used to persist GUI form inputs. Empty defaults to --mode. "
             "Launch scripts set this so A/B/C GUIs keep separate drafts."
+        ),
+    )
+    parser.add_argument(
+        "--storage-mode",
+        choices=("direct-nas", "local-outbox"),
+        default=os.environ.get("FRANKA_GUI_STORAGE_MODE", "direct-nas"),
+        help=(
+            "Episode persistence mode. direct-nas writes through hidden NAS staging; "
+            "local-outbox keeps the legacy delayed sync flow."
         ),
     )
     return parser.parse_args()
@@ -80,7 +92,25 @@ def main() -> int:
         right_robot_port=args.right_port,
         dual_robot_timeout_ms=args.timeout_ms,
         mock=args.mock,
+        direct_to_output_root=args.storage_mode == "direct-nas",
     )
+
+    if (
+        not args.mock
+        and args.storage_mode == "local-outbox"
+        and os.environ.get("FRANKA_GUI_DISABLE_NAS_SYNC", "") != "1"
+    ):
+        try:
+            ensure_sync_daemon(
+                repo_root,
+                record_cache_root(),
+                Path.home() / "Desktop" / "Muka_NAS",
+            )
+        except Exception as exc:
+            print(
+                f"WARNING: could not start delayed NAS sync daemon: {exc}",
+                file=sys.stderr,
+            )
 
     app = QtWidgets.QApplication(sys.argv)
     app_names = {

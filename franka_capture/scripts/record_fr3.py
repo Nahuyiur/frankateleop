@@ -15,7 +15,7 @@ from franka_capture.config.fr3_single import (
     DEFAULT_CAMERAS,
     DEFAULT_RECORDING,
     DEFAULT_ROBOT,
-    SINGLE_SCHEMA_VERSION,
+    SINGLE_VIDEO_SCHEMA_VERSION,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
@@ -157,7 +157,7 @@ def main() -> None:
                 video_fps=FIXED_RECORDING_FPS,
                 metadata={
                     "source": "franka_capture.scripts.record_fr3",
-                    "schema_version": SINGLE_SCHEMA_VERSION,
+                    "schema_version": SINGLE_VIDEO_SCHEMA_VERSION,
                     "started_at_unix": time.time(),
                     "robot": {
                         "host": args.host,
@@ -335,14 +335,14 @@ def main() -> None:
                 timestamp=now,
             )
             frame = {
-                "schema_version": SINGLE_SCHEMA_VERSION,
+                "schema_version": SINGLE_VIDEO_SCHEMA_VERSION,
+                "frame_index": len(writer.frames),
                 "pose": _as_saved_value(pose),
                 "joint": _as_saved_value(joint_state[:7]),
                 **gripper_fields,
                 "timestamp": now,
             }
             for name in camera_names:
-                frame[f"{name}_image"] = rgb_frames[name][:, :, ::-1].copy()
                 depth = depth_frames.get(name)
                 if depth is not None:
                     if depth.ndim == 3 and depth.shape[2] == 1:

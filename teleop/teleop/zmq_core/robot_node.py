@@ -57,6 +57,11 @@ class ZMQServerRobot:
                             result = {"error": f"Robot {self._robot} does not support command_ee_pose"}
                         else:
                             result = self._robot.command_ee_pose(**args)
+                    elif method == "move_to_joint_positions":
+                        if not hasattr(self._robot, "move_to_joint_positions"):
+                            result = {"error": f"Robot {self._robot} does not support move_to_joint_positions"}
+                        else:
+                            result = self._robot.move_to_joint_positions(**args)
                     elif method == "get_observations":
                         result = self._robot.get_observations()
                     else:

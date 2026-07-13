@@ -62,17 +62,19 @@ if ! command -v lsof &> /dev/null; then
 fi
 
 echo "🔍 正在查找占用50052端口的进程..."
-PID=$(sudo_run lsof -t -i:50052 || true)
-echo "📝 调试信息：查找到的PID=$PID"
+mapfile -t PIDS < <(sudo_run lsof -t -i:50052 2>/dev/null | awk '/^[0-9]+$/ && !seen[$0]++' || true)
+echo "📝 调试信息：查找到的PID=${PIDS[*]:-}"
 
-if [[ -n "$PID" ]]; then
-    echo "发现占用50052端口的进程，PID: $PID，正在终止..."
-    if sudo_run kill -9 "$PID"; then
-        echo "✅ 进程$PID已成功终止"
-    else
-        echo "❌ 终止进程$PID失败"
-        exit 1
-    fi
+if [[ "${#PIDS[@]}" -gt 0 ]]; then
+    echo "发现占用50052端口的进程，PID: ${PIDS[*]}，正在终止..."
+    for PID in "${PIDS[@]}"; do
+        if sudo_run kill -9 "$PID"; then
+            echo "✅ 进程$PID已成功终止"
+        else
+            echo "❌ 终止进程$PID失败"
+            exit 1
+        fi
+    done
 else
     echo "⚠️ 未发现占用50052端口的进程，无需清理"
 fi

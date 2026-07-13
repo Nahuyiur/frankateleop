@@ -46,6 +46,7 @@ class RecordingConfig:
 
 DEFAULT_ROBOT = RobotEndpointConfig()
 SINGLE_SCHEMA_VERSION = "franka_single_v2"
+SINGLE_VIDEO_SCHEMA_VERSION = "franka_single_v3"
 SINGLE_GUI_CAMERA_NAMES = ("left_wrist", "left", "middle")
 RIGHT_GUI_CAMERA_NAMES = ("middle", "right", "right_wrist")
 
