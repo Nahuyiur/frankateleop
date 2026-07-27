@@ -166,7 +166,8 @@ sync_remote_right_scripts() {
         teleop/experiments/run_env.py \
         teleop/teleop/agents/teleop_agent.py \
         teleop/teleop/dynamixel/driver.py \
-        teleop/teleop/robots/fr3.py
+        teleop/teleop/robots/fr3.py \
+        teleop/teleop/zmq_core/robot_node.py
     )
     if [[ -f "$INITIAL_JOINTS_FILE" && "$INITIAL_JOINTS_FILE" == "$REPO_ROOT"/* ]]; then
         tar_items+=("${INITIAL_JOINTS_FILE#"$REPO_ROOT"/}")

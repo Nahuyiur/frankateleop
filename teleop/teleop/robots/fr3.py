@@ -325,6 +325,13 @@ class fr3Robot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
+        joint_velocities = (
+            self.robot.get_joint_velocities()
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float32)
+        )
         ee_pos, ee_quat = self.robot.get_ee_pose()
         ee_pos = ee_pos.detach().cpu().numpy()
         ee_quat = ee_quat.detach().cpu().numpy()
@@ -338,7 +345,7 @@ class fr3Robot(Robot):
         gripper_width = float(joints[-1] * self._max_gripper_width)
         return {
             "joint_positions": joints,
-            "joint_velocities": joints,
+            "joint_velocities": joint_velocities,
             "ee_pos_quat": pos_quat,
             "ee_pose_euler": pos_euler,
             "gripper_position": gripper_pos,
