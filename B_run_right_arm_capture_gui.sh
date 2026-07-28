@@ -30,11 +30,16 @@ fi
 # when deliberately using the legacy delayed sync workflow.
 export FRANKA_GUI_STORAGE_MODE="${FRANKA_GUI_STORAGE_MODE:-direct-nas}"
 
-export BI_ARM_RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
+export BI_ARM_RIGHT_HOST="${BI_ARM_RIGHT_HOST:-192.168.1.131}"
+BI_ARM_RIGHT_SSH="${BI_ARM_RIGHT_SSH:-pnp@$BI_ARM_RIGHT_HOST}"
+if [[ "$BI_ARM_RIGHT_SSH" != *@* ]]; then
+    BI_ARM_RIGHT_SSH="pnp@$BI_ARM_RIGHT_SSH"
+fi
+export BI_ARM_RIGHT_SSH
 export BI_ARM_RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 export BI_ARM_RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
 export BI_ARM_RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
-export FRANKA_RIGHT_ZMQ_HOST="${FRANKA_RIGHT_ZMQ_HOST:-$BI_ARM_RIGHT_SSH}"
+export FRANKA_RIGHT_ZMQ_HOST="${FRANKA_RIGHT_ZMQ_HOST:-$BI_ARM_RIGHT_HOST}"
 export FRANKA_RIGHT_ZMQ_PORT="${FRANKA_RIGHT_ZMQ_PORT:-$BI_ARM_RIGHT_REMOTE_ZMQ_PORT}"
 export BI_ARM_RIGHT_ROBOTIQ_COMPORT="${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-${RIGHT_ROBOTIQ_COMPORT:-}}"
 export BI_ARM_SSH_PASSWORD="${BI_ARM_SSH_PASSWORD:-}"
@@ -63,6 +68,7 @@ B 右臂单臂 GUI 会优先尝试打开相机:
 默认:
   固定录制频率=30 Hz
   固定保存根目录=$DEFAULT_OUTPUT_ROOT
+  右机网络地址=$BI_ARM_RIGHT_HOST
   右机=$BI_ARM_RIGHT_SSH
   右机仓库=$BI_ARM_RIGHT_REPO
   右臂直连 ZMQ=$FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT
@@ -114,6 +120,7 @@ echo ">>> 固定录制频率: 30 Hz"
 echo ">>> B 右臂单臂相机: middle,right,right_wrist；缺失时可预览但禁止录制"
 echo ">>> 右臂直连 ZMQ: $FRANKA_RIGHT_ZMQ_HOST:$FRANKA_RIGHT_ZMQ_PORT"
 echo ">>> 右臂本地 ZMQ 隧道端口(回滚用): $BI_ARM_RIGHT_LOCAL_ZMQ_PORT"
+echo ">>> 右机网络地址: $BI_ARM_RIGHT_HOST"
 echo ">>> 右机: $BI_ARM_RIGHT_SSH"
 echo ">>> 右机仓库: $BI_ARM_RIGHT_REPO"
 if [[ -n "${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-}" ]]; then

@@ -2,7 +2,11 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_SSH="${BI_ARM_RIGHT_SSH:-192.168.1.131}"
+RIGHT_HOST="${BI_ARM_RIGHT_HOST:-192.168.1.131}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-pnp@$RIGHT_HOST}"
+if [[ "$RIGHT_SSH" != *@* ]]; then
+    RIGHT_SSH="pnp@$RIGHT_SSH"
+fi
 RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
 RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
 RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
@@ -68,7 +72,8 @@ execute mode can auto-approach frame 0 instead of failing.
 --skip-robot-check only validates the episode file and exits before sudo, SSH,
 port cleanup, or hardware stack startup.
 Environment:
-  BI_ARM_RIGHT_SSH=192.168.1.131
+  BI_ARM_RIGHT_HOST=192.168.1.131
+  BI_ARM_RIGHT_SSH=pnp@192.168.1.131
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_RIGHT_LOCAL_GRIPPER_PORT=15053

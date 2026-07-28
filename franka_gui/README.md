@@ -101,6 +101,9 @@ GUI 画面只拉取最新帧并以约 `15 Hz` 刷新，旧预览帧不会排队�
 
    这个文件只应该保存在本机，权限建议为 `600`。也可以用环境变量
    `FRANKA_GUI_SUDO_PASSWORD_FILE` 指向其他私有文件。
+   B/C 会把该凭据同时用于本机 sudo、`pnp@192.168.1.131` SSH 和右机 sudo。
+   SSH 登录身份与右臂 ZMQ 地址彼此独立，因此从用户名不是 `pnp` 的新左机启动时，
+   也不会错误尝试 `<左机用户名>@192.168.1.131`。
 3. 在中间选择任务名，或点击 `新增采集任务` 输入一个任务名称。
 4. 填写 `Text instruction`，这项不能为空，会保存到 `metadata.json` 和
    `instruction.txt`。可选填写 `附加 metadata`。普通文本会保存为 `user_metadata.note`；JSON object
