@@ -20,23 +20,14 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
     exit 1
 fi
 
-echo ">>> 启动Gripper 客户端 ..."
+echo ">>> 启动同构臂 Teleop 客户端 ..."
 
-resolve_teleop_port() {
-    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJTKP2-if00-port0"
-    local teleop_port="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-$default_port}}}"
-
-    if [[ ! -e "$teleop_port" ]]; then
-        echo "❌ 串口不存在：$teleop_port"
-        echo "   默认固定左臂同构臂串口：$default_port"
-        echo "   如需临时覆盖，请设置 LEFT_TELEOP_PORT/FRANKA_TELEOP_PORT/TELEOP_PORT。"
-        exit 1
-    fi
-
-    printf '%s\n' "$teleop_port"
-}
-
-TELEOP_PORT_RESOLVED="$(resolve_teleop_port)"
+PORT_RESOLVER="$REPO_ROOT/scripts/resolve_left_teleop_port.sh"
+if [[ ! -f "$PORT_RESOLVER" ]]; then
+    echo "❌ 未找到左臂同构臂串口解析脚本：$PORT_RESOLVER" >&2
+    exit 1
+fi
+TELEOP_PORT_RESOLVED="$(bash "$PORT_RESOLVER")"
 echo ">>> 使用同构臂串口：$TELEOP_PORT_RESOLVED"
 python3 "$SCRIPT_PATH" --agent=teleop --teleop_port="$TELEOP_PORT_RESOLVED" "$@"
 #如果要启用采集数据，需要在后面增加“--use_save_interface”
