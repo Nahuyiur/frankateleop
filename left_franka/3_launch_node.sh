@@ -40,9 +40,21 @@ fi
 
 echo ">>> 启动Robot Node ..."
 export FRANKA_ROBOT_NAME="left"
+ROBOT_SERVER_PORT="${LEFT_ROBOT_SERVER_PORT:-${FRANKA_ROBOT_SERVER_PORT:-50052}}"
+GRIPPER_SERVER_PORT="${LEFT_GRIPPER_SERVER_PORT:-${FRANKA_GRIPPER_SERVER_PORT:-50054}}"
+TELEOP_PORT="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-6002}}"
 echo ">>> robot side=$FRANKA_ROBOT_NAME"
+echo ">>> robot server port=$ROBOT_SERVER_PORT"
+echo ">>> gripper server port=$GRIPPER_SERVER_PORT"
+echo ">>> Robot Node port=$TELEOP_PORT"
 echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
 echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
 echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}"
-python3 "$SCRIPT_PATH" --robot=fr3_left --tele_port=6002 --robot_port=50052 --gripper_port=50054 --robot_ip=127.0.0.1 "$@"
+python3 "$SCRIPT_PATH" \
+    --robot=fr3_left \
+    --tele_port="$TELEOP_PORT" \
+    --robot_port="$ROBOT_SERVER_PORT" \
+    --gripper_port="$GRIPPER_SERVER_PORT" \
+    --robot_ip=127.0.0.1 \
+    "$@"
 #robot_ip是直接连接机器人的主机的IP，如果是本机直连机器人，可以用127.0.0.1代替

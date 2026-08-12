@@ -22,14 +22,35 @@ source_conda() {
 
 sudo_run() {
     if command -v sudo >/dev/null 2>&1; then
-        if [[ -n "${FRANKA_SUDO_PASSWORD:-}" ]]; then
-            printf '%s\n' "$FRANKA_SUDO_PASSWORD" | sudo -S -p '' "$@"
+        if sudo -n true >/dev/null 2>&1; then
+            sudo -n "$@"
+            return
+        fi
+        local sudo_password="${FRANKA_SUDO_PASSWORD:-}"
+        if [[ -z "$sudo_password" && -n "${FRANKA_SUDO_PASSWORD_FILE:-}" ]]; then
+            validate_sudo_password_file "$FRANKA_SUDO_PASSWORD_FILE" || return 1
+            IFS= read -r sudo_password < "$FRANKA_SUDO_PASSWORD_FILE" || true
+        fi
+        if [[ -n "$sudo_password" ]]; then
+            printf '%s\n' "$sudo_password" | sudo -S -p '' "$@"
         else
             sudo "$@"
         fi
     else
         "$@"
     fi
+}
+
+validate_sudo_password_file() {
+    local file="$1"
+    local mode owner
+    [[ -f "$file" ]] || { echo "ERROR: sudo credential file not found: $file" >&2; return 1; }
+    mode="$(stat -c '%a' "$file")"
+    owner="$(stat -c '%u' "$file")"
+    [[ "$owner" == "$(id -u)" && ( "$mode" == "600" || "$mode" == "400" ) ]] || {
+        echo "ERROR: sudo credential file must be owned by the current user with mode 600 or 400: $file" >&2
+        return 1
+    }
 }
 
 cleanup_gripper_port() {

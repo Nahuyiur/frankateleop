@@ -25,15 +25,56 @@ def print_color(*args, color=None, attrs=(), **kwargs):
     print(*args, **kwargs)
 
 
-def wrap_arm_action_to_nearest(action, reference):
+def arm_joint_indices(num_dofs, bimanual=False):
+    if num_dofs < 2:
+        raise ValueError(f"Expected arm joints plus a gripper, got {num_dofs} DOFs")
+    if not bimanual:
+        return np.arange(num_dofs - 1)
+    if num_dofs % 2 != 0:
+        raise ValueError(f"Bimanual state must have even size, got {num_dofs}")
+    arm_size = num_dofs // 2
+    if arm_size < 2:
+        raise ValueError(f"Invalid bimanual state size: {num_dofs}")
+    return np.concatenate(
+        [np.arange(arm_size - 1), np.arange(arm_size, num_dofs - 1)]
+    )
+
+
+def joint_vectors(action, reference):
     action = np.asarray(action, dtype=float).copy()
     reference = np.asarray(reference, dtype=float)
-    count = min(7, action.shape[0], reference.shape[0])
-    if count > 0:
-        action[:count] = reference[:count] + (
-            (action[:count] - reference[:count] + np.pi) % (2 * np.pi) - np.pi
+    if action.ndim != 1 or reference.ndim != 1:
+        raise ValueError(
+            f"Joint states must be 1-D, got {action.shape} and {reference.shape}"
         )
+    if action.shape != reference.shape:
+        raise ValueError(
+            f"Agent output shape {action.shape} does not match robot state "
+            f"{reference.shape}"
+        )
+    return action, reference
+
+
+def wrap_arm_action_to_nearest(action, reference, bimanual=False):
+    action, reference = joint_vectors(action, reference)
+    arm_indices = arm_joint_indices(action.size, bimanual=bimanual)
+    action[arm_indices] = reference[arm_indices] + (
+        (action[arm_indices] - reference[arm_indices] + np.pi) % (2 * np.pi)
+        - np.pi
+    )
     return action
+
+
+def limit_arm_step(command, current, max_delta, bimanual=False):
+    command, current = joint_vectors(command, current)
+    arm_indices = arm_joint_indices(command.size, bimanual=bimanual)
+    delta = command[arm_indices] - current[arm_indices]
+    largest_delta = float(np.max(np.abs(delta)))
+    if largest_delta > max_delta:
+        delta = delta / largest_delta * max_delta
+    limited = command.copy()
+    limited[arm_indices] = current[arm_indices] + delta
+    return limited
 
 
 def env_flag(name, default=False):
@@ -50,7 +91,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    robot_type: str = None  # only needed for quest agent or spacemouse agent
+    robot_type: Optional[str] = None  # only needed for quest or spacemouse agents
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -154,6 +195,12 @@ def main(args):
                 for jnt in np.linspace(curr_joints, reset_joints, steps):
                     env.step(jnt)
                     time.sleep(0.001)
+            elif reset_joints.size + 1 == curr_joints.size:
+                print(
+                    "Keeping robot-node initial pose: legacy reset target contains "
+                    f"{reset_joints.size} arm joints while robot state also includes "
+                    "a gripper value"
+                )
             else:
                 print(
                     "Skipping reset_joints because shape does not match robot state: "
@@ -179,22 +226,21 @@ def main(args):
     obs = env.get_obs()
     joints = obs["joint_positions"]
     joints = np.array(joints)
-    start_pos = wrap_arm_action_to_nearest(agent.act(obs), joints)
-
-    abs_deltas = np.abs(start_pos - joints)
-    id_max_joint_delta = np.argmax(abs_deltas)
+    start_pos = wrap_arm_action_to_nearest(
+        agent.act(obs), joints, bimanual=args.bimanual
+    )
+    arm_indices = arm_joint_indices(joints.size, bimanual=args.bimanual)
+    abs_deltas = np.abs(start_pos[arm_indices] - joints[arm_indices])
 
     max_joint_delta = 0.8
-    if abs_deltas[id_max_joint_delta] > max_joint_delta:
-        id_mask = abs_deltas > max_joint_delta
+    if np.max(abs_deltas) > max_joint_delta:
+        unsafe_indices = arm_indices[abs_deltas > max_joint_delta]
         print()
-
-        ids = np.arange(len(id_mask))[id_mask]
         for i, delta, joint, current_j in zip(
-            ids,
-            abs_deltas[id_mask],
-            start_pos[id_mask],
-            joints[id_mask],
+            unsafe_indices,
+            abs_deltas[abs_deltas > max_joint_delta],
+            start_pos[unsafe_indices],
+            joints[unsafe_indices],
         ):
             print(
                 f"joint[{i}]: \t delta: {delta:4.3f} , leader: \t{joint:4.3f} , follower: \t{current_j:4.3f}"
@@ -214,22 +260,31 @@ def main(args):
     for _ in range(25):
         obs = env.get_obs()
         current_joints = obs["joint_positions"]
-        command_joints = wrap_arm_action_to_nearest(agent.act(obs), current_joints)
-        delta = command_joints - current_joints
-        max_joint_delta = np.abs(delta).max()
-        if max_joint_delta > max_delta:
-            delta = delta / max_joint_delta * max_delta
-        env.step(current_joints + delta)
+        command_joints = wrap_arm_action_to_nearest(
+            agent.act(obs), current_joints, bimanual=args.bimanual
+        )
+        env.step(
+            limit_arm_step(
+                command_joints,
+                current_joints,
+                max_delta,
+                bimanual=args.bimanual,
+            )
+        )
 
     obs = env.get_obs()
     joints = obs["joint_positions"]
-    action = wrap_arm_action_to_nearest(agent.act(obs), joints)
-    if (action - joints > 0.5).any():
+    action = wrap_arm_action_to_nearest(
+        agent.act(obs), joints, bimanual=args.bimanual
+    )
+    arm_indices = arm_joint_indices(len(joints), bimanual=args.bimanual)
+    arm_delta = action[arm_indices] - joints[arm_indices]
+    if (np.abs(arm_delta) > 0.5).any():
         print("Action is too big")
 
         # print which joints are too big
-        joint_index = np.where(action - joints > 0.8)
-        for j in joint_index:
+        joint_indices = arm_indices[np.abs(arm_delta) > 0.5]
+        for j in joint_indices:
             print(
                 f"Joint [{j}], leader: {action[j]}, follower: {joints[j]}, diff: {action[j] - joints[j]}"
             )
@@ -263,7 +318,9 @@ def main(args):
             end="",
             flush=True,
         )
-        action = wrap_arm_action_to_nearest(agent.act(obs), obs["joint_positions"])
+        action = wrap_arm_action_to_nearest(
+            agent.act(obs), obs["joint_positions"], bimanual=args.bimanual
+        )
         now = time.time()
         if debug_action and now >= debug_next_time:
             current = np.asarray(obs["joint_positions"], dtype=float)

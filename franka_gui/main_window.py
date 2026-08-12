@@ -76,7 +76,9 @@ class CameraView(QtWidgets.QFrame):
             QtWidgets.QSizePolicy.Policy.Expanding,
             QtWidgets.QSizePolicy.Policy.Expanding,
         )
-        self.label.setStyleSheet("background: #050505; color: #9ca3af;")
+        self.label.setStyleSheet(
+            "background: #12181f; color: #80cde1; border-radius: 4px;"
+        )
         layout.addWidget(self.title)
         layout.addWidget(self.label, 1)
 
@@ -123,6 +125,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _next_indices_loaded = QtCore.pyqtSignal(str, dict)
     _snapshot_saved = QtCore.pyqtSignal(str)
     _snapshot_failed = QtCore.pyqtSignal(str)
+    closed = QtCore.pyqtSignal(bool)
 
     def __init__(
         self,
@@ -144,6 +147,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._episode_state = "idle"
         self._local_save_queue_count = 0
         self._closing = False
+        self._returning_home = False
+        self._closed_emitted = False
         self._replay_process: Optional[QtCore.QProcess] = None
         self._replay_log_dialog: Optional[QtWidgets.QDialog] = None
         self._replay_log_text: Optional[QtWidgets.QPlainTextEdit] = None
@@ -163,14 +168,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.options.output_root = self._fixed_output_root
 
         window_titles = {
-            "single": "Franka Single-Arm Capture",
-            "right": "Franka Right-Arm Capture",
-            "dual": "Franka Dual-Arm Capture",
+            "single": "莫刻 · 左臂采集",
+            "right": "莫刻 · 右臂采集",
+            "dual": "莫刻 · 双臂采集",
         }
         self.setWindowTitle(window_titles[self.controller.options.mode])
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         self.resize(1760, 960)
-        self.setMinimumSize(1280, 760)
+        self.setMinimumSize(1480, 860)
         self._build_ui()
         self._set_quality_controls_enabled(False)
         self._connect_signals()
@@ -259,6 +264,12 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             event.ignore()
             return
+        if not self.process_manager.cancel_start_blocking():
+            event.ignore()
+            return
+        if not self.process_manager.stop_stack_blocking():
+            event.ignore()
+            return
         self._closing = True
         if not self.controller.shutdown():
             self._closing = False
@@ -276,11 +287,19 @@ class MainWindow(QtWidgets.QMainWindow):
         _shutdown_executor(self._index_executor)
         _shutdown_executor(self._disk_executor)
         _shutdown_executor(self._snapshot_executor)
-        self.process_manager.stop_stack_blocking()
         app = QtWidgets.QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
+        if not self._closed_emitted:
+            self._closed_emitted = True
+            self.closed.emit(self._returning_home)
         event.accept()
+
+    def _request_return_home(self) -> None:
+        self._returning_home = True
+        self.close()
+        if self.isVisible():
+            self._returning_home = False
 
     def eventFilter(self, obj, event) -> bool:
         if QtWidgets.QApplication.activeModalWidget() is not None:
@@ -376,127 +395,185 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.setStyleSheet(
             """
-            QMainWindow { background: #f6f8fc; }
+            QMainWindow {
+                background: #f3f5f7;
+                color: #12181f;
+            }
+            QToolTip {
+                background: #12181f;
+                color: #f9f6e8;
+                border: 1px solid #2b659a;
+                padding: 4px 6px;
+            }
             QFrame#Panel {
                 background: #ffffff;
-                border: 1px solid #e5e7eb;
+                border: 1px solid #cbd6df;
                 border-radius: 8px;
             }
             QFrame#LeftPanel {
-                background: #ffffff;
-                border: 1px solid #bfdbfe;
+                background: #f9f6e8;
+                border: 1px solid #b9cad8;
                 border-radius: 8px;
             }
             QFrame#CenterPanel {
                 background: #ffffff;
-                border: 1px solid #bbf7d0;
+                border: 1px solid #b9cad8;
                 border-radius: 8px;
             }
             QFrame#CameraPanel {
                 background: #ffffff;
-                border: 1px solid #ddd6fe;
+                border: 1px solid #aebfce;
                 border-radius: 8px;
             }
             QFrame#CameraView {
-                background: #ffffff;
-                border: 1px solid #e9d5ff;
-                border-radius: 8px;
+                background: #f3f5f7;
+                border: 1px solid #b9cad8;
+                border-radius: 6px;
             }
             QFrame#AccentBarBlue {
                 border-radius: 4px;
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #2563eb,
-                    stop:1 #06b6d4
-                );
+                background: #2b659a;
             }
             QFrame#AccentBarGreen {
                 border-radius: 4px;
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #22c55e,
-                    stop:1 #facc15
-                );
+                background: #80cde1;
             }
             QFrame#AccentBarPurple {
                 border-radius: 4px;
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #7c3aed,
-                    stop:1 #ec4899
-                );
+                background: #603daf;
             }
             QLabel#AppTitle {
                 font-size: 20px;
                 font-weight: 900;
-                color: #0f172a;
+                color: #0c015e;
             }
-            QLabel#SectionTitle { font-weight: 800; color: #111827; }
-            QLabel#CameraTitle { font-weight: 800; color: #5b21b6; }
+            QLabel#SectionTitle {
+                font-size: 14px;
+                font-weight: 800;
+                color: #1324a2;
+            }
+            QLabel#CameraTitle {
+                font-weight: 800;
+                color: #2b659a;
+            }
             QLabel#OutputRoot {
-                color: #475569;
-                background: #f8fafc;
-                border: 1px solid #e2e8f0;
+                color: #302e2c;
+                background: #f3f5f7;
+                border: 1px solid #cbd6df;
                 border-radius: 6px;
                 padding: 6px;
             }
-            QPushButton {
+            QFrame#LeftPanel QPushButton,
+            QFrame#CenterPanel QPushButton {
                 min-height: 34px;
                 border-radius: 6px;
-                border: 1px solid transparent;
-                background: #f8fafc;
-                color: #0f172a;
+                border: 1px solid #b9cad8;
+                background: #ffffff;
+                color: #12181f;
                 font-weight: 700;
+                padding: 0 10px;
             }
-            QPushButton:hover { background: #eef2ff; border-color: #c7d2fe; }
-            QPushButton#Danger { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
-            QPushButton#Danger:hover { background: #ffe4e6; }
-            QPushButton#Primary {
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #06b6d4,
-                    stop:1 #2563eb
-                );
-                color: white;
+            QFrame#LeftPanel QPushButton:hover,
+            QFrame#CenterPanel QPushButton:hover {
+                background: #e8f5f8;
+                border-color: #2b659a;
+                color: #1324a2;
             }
-            QPushButton#Success {
-                background: #ecfdf5;
-                color: #047857;
-                border-color: #a7f3d0;
+            QFrame#LeftPanel QPushButton:pressed,
+            QFrame#CenterPanel QPushButton:pressed {
+                background: #d6edf3;
+                border-color: #1324a2;
             }
-            QPushButton#Success:hover { background: #d1fae5; }
-            QPushButton#Purple {
-                background: #f5f3ff;
-                color: #6d28d9;
-                border-color: #ddd6fe;
+            QFrame#LeftPanel QPushButton:disabled,
+            QFrame#CenterPanel QPushButton:disabled {
+                background: #eef1f3;
+                border-color: #d8dee3;
+                color: #89939b;
             }
-            QPushButton#Purple:hover { background: #ede9fe; }
-            QPushButton#Neutral { background: #f8fafc; color: #0f172a; border-color: #e2e8f0; }
-            QLineEdit, QComboBox {
+            QFrame#LeftPanel QPushButton#Danger {
+                background: #fff2e8;
+                color: #9a3d00;
+                border-color: #f87512;
+            }
+            QFrame#LeftPanel QPushButton#Danger:hover {
+                background: #f87512;
+                color: #12181f;
+                border-color: #f87512;
+            }
+            QFrame#LeftPanel QPushButton#Primary {
+                background: #2b659a;
+                color: #ffffff;
+                border-color: #2b659a;
+            }
+            QFrame#LeftPanel QPushButton#Primary:hover {
+                background: #1324a2;
+                color: #ffffff;
+                border-color: #1324a2;
+            }
+            QFrame#LeftPanel QPushButton#Success {
+                background: #e5f5f8;
+                color: #0c015e;
+                border-color: #80cde1;
+            }
+            QFrame#LeftPanel QPushButton#Success:hover {
+                background: #80cde1;
+                color: #0c015e;
+                border-color: #2b659a;
+            }
+            QFrame#LeftPanel QPushButton#Purple {
+                background: #eeeaf8;
+                color: #603daf;
+                border-color: #b9a9dc;
+            }
+            QFrame#LeftPanel QPushButton#Purple:hover {
+                background: #603daf;
+                color: #ffffff;
+                border-color: #603daf;
+            }
+            QFrame#LeftPanel QPushButton#Neutral,
+            QFrame#CenterPanel QPushButton#Neutral {
+                background: #f3f5f7;
+                color: #302e2c;
+                border-color: #cbd6df;
+            }
+            QFrame#CenterPanel QLineEdit,
+            QFrame#CenterPanel QComboBox {
                 min-height: 30px;
-                border: 1px solid #cbd5e1;
+                border: 1px solid #aebfce;
                 border-radius: 6px;
                 padding: 0 8px;
-                background: white;
+                background: #ffffff;
+                color: #12181f;
+                selection-background-color: #2b659a;
+                selection-color: #ffffff;
             }
-            QPlainTextEdit {
-                border: 1px solid #cbd5e1;
+            QFrame#CenterPanel QPlainTextEdit {
+                border: 1px solid #aebfce;
                 border-radius: 6px;
                 padding: 6px;
                 background: #ffffff;
+                color: #12181f;
+                selection-background-color: #2b659a;
+                selection-color: #ffffff;
             }
-            QProgressBar {
-                border: 1px solid #cbd5e1;
+            QFrame#CenterPanel QLineEdit:focus,
+            QFrame#CenterPanel QComboBox:focus,
+            QFrame#CenterPanel QPlainTextEdit:focus {
+                border: 2px solid #2b659a;
+            }
+            QFrame#CenterPanel QComboBox::drop-down {
+                border: 0;
+                width: 24px;
+            }
+            QFrame#LeftPanel QProgressBar {
+                border: 1px solid #aebfce;
                 border-radius: 5px;
                 text-align: center;
-                background: #f8fafc;
+                background: #f3f5f7;
+                color: #302e2c;
             }
-            QProgressBar::chunk {
-                background: qlineargradient(
-                    x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #22c55e,
-                    stop:1 #06b6d4
-                );
+            QFrame#LeftPanel QProgressBar::chunk {
+                background: #2b659a;
                 border-radius: 4px;
             }
             """
@@ -511,9 +588,9 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.setSpacing(8)
 
         app_titles = {
-            "single": "FR3 Single Capture",
-            "right": "FR3 Right Capture",
-            "dual": "FR3 Dual Capture",
+            "single": "莫刻 · 左臂",
+            "right": "莫刻 · 右臂",
+            "dual": "莫刻 · 双臂",
         }
         app_title = QtWidgets.QLabel(app_titles[self.controller.options.mode])
         app_title.setObjectName("AppTitle")
@@ -539,12 +616,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_btn.setObjectName("Neutral")
         self.log_btn = QtWidgets.QPushButton("查看日志")
         self.log_btn.setObjectName("Neutral")
+        self.return_home_btn = QtWidgets.QPushButton("返回首页")
+        self.return_home_btn.setObjectName("Neutral")
 
         layout.addWidget(self.start_stack_btn)
         layout.addWidget(self.stop_stack_btn)
         layout.addWidget(self.stop_env_btn)
         layout.addWidget(self.preview_btn)
         layout.addWidget(self.log_btn)
+        layout.addWidget(self.return_home_btn)
 
         layout.addSpacing(6)
         replay_title = QtWidgets.QLabel("数据复现")
@@ -575,7 +655,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.low_quality_btn = QtWidgets.QPushButton("低质量 L")
         self.low_quality_btn.setObjectName("Neutral")
         self.failure_btn = QtWidgets.QPushButton("失败 F")
-        self.failure_btn.setObjectName("Purple")
+        self.failure_btn.setObjectName("Danger")
         layout.addWidget(self.record_btn)
         layout.addWidget(self.pause_btn)
         layout.addWidget(self.end_btn)
@@ -636,6 +716,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
         form = QtWidgets.QFormLayout()
+        operator_label = QtWidgets.QLabel(self.controller.options.operator_name or "未确认")
+        operator_label.setObjectName("OutputRoot")
+        form.addRow("数采员", operator_label)
         form.addRow("任务名称", self.task_combo)
         form.addRow("Text instruction", self.instruction_edit)
         form.addRow("", self.new_task_btn)
@@ -661,6 +744,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.active_episode = QtWidgets.QLabel("当前 episode: -")
         self.frame_count = QtWidgets.QLabel("当前帧数: 0")
         self.saved_episodes = QtWidgets.QLabel("已保存: 0")
+        self.validation_status = QtWidgets.QLabel("核验: 等待 episode 保存")
+        self.validation_status.setWordWrap(True)
+        self.validation_status.setTextInteractionFlags(
+            QtCore.Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.save_queue = QtWidgets.QLabel("本地保存队列: 0")
         for label in (
             self.stack_state,
@@ -668,6 +756,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.active_episode,
             self.frame_count,
             self.saved_episodes,
+            self.validation_status,
             self.save_queue,
         ):
             layout.addWidget(label)
@@ -676,7 +765,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status_box = QtWidgets.QLabel("READY")
         self.status_box.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.status_box.setMinimumHeight(72)
-        self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
+        self.status_box.setStyleSheet(
+            "background: #f3f5f7; color: #1324a2; border: 1px solid #80cde1; "
+            "border-radius: 8px; font-size: 22px; font-weight: 800;"
+        )
         layout.addWidget(self.status_box)
 
         hint = QtWidgets.QLabel(
@@ -722,6 +814,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.preview_btn.clicked.connect(self._restart_preview)
         self.log_btn.clicked.connect(self._show_logs)
         self.replay_btn.clicked.connect(self._open_replay_dialog)
+        self.return_home_btn.clicked.connect(self._request_return_home)
 
         self.record_btn.clicked.connect(self._start_recording)
         self.pause_btn.clicked.connect(self.controller.pause)
@@ -741,6 +834,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.controller.active_episode_changed.connect(self._active_episode_changed)
         self.controller.recording_frame_count.connect(lambda count: self.frame_count.setText(f"当前帧数: {count}"))
         self.controller.save_queue_changed.connect(self._save_queue_changed)
+        self.controller.validation_status_changed.connect(self._set_validation_status)
         self.controller.episode_saved.connect(self._episode_saved)
         self._snapshot_saved.connect(self._on_snapshot_saved)
         self._snapshot_failed.connect(self._on_snapshot_failed)
@@ -825,7 +919,8 @@ class MainWindow(QtWidgets.QMainWindow):
             placeholder.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
             placeholder.setMinimumSize(520, 320)
             placeholder.setStyleSheet(
-                "background: #050505; color: #d1d5db; border-radius: 8px; font-size: 20px;"
+                "background: #12181f; color: #80cde1; border: 1px solid #2b659a; "
+                "border-radius: 8px; font-size: 20px;"
             )
             self.camera_grid.addWidget(placeholder, 0, 0, 2, 6)
             self.camera_grid.setRowStretch(0, 1)
@@ -970,27 +1065,42 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_config_controls_enabled(False)
             self._set_quality_controls_enabled(False)
             self.status_box.setText("REC")
-            self.status_box.setStyleSheet("background: #fff7ed; color: #9a3412; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet(
+                "background: #f9f6e8; color: #f87512; border: 1px solid #f87512; "
+                "border-radius: 8px; font-size: 22px; font-weight: 800;"
+            )
         elif state == "paused":
             self._set_config_controls_enabled(False)
             self._set_quality_controls_enabled(False)
             self.status_box.setText("PAUSE")
-            self.status_box.setStyleSheet("background: #fefce8; color: #854d0e; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet(
+                "background: #f3f5f7; color: #603daf; border: 1px solid #603daf; "
+                "border-radius: 8px; font-size: 22px; font-weight: 800;"
+            )
         elif state == "saving":
             self._set_config_controls_enabled(True)
             self._set_quality_controls_enabled(False)
             self.status_box.setText("SAVING")
-            self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet(
+                "background: #f3f5f7; color: #0c015e; border: 1px solid #80cde1; "
+                "border-radius: 8px; font-size: 22px; font-weight: 800;"
+            )
         elif state == "quality_pending":
             self._set_config_controls_enabled(False)
             self._set_quality_controls_enabled(True)
             self.status_box.setText("JUDGING")
-            self.status_box.setStyleSheet("background: #eff6ff; color: #1d4ed8; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet(
+                "background: #f3f5f7; color: #603daf; border: 1px solid #603daf; "
+                "border-radius: 8px; font-size: 22px; font-weight: 800;"
+            )
         else:
             self._set_config_controls_enabled(True)
             self._set_quality_controls_enabled(False)
             self.status_box.setText("READY")
-            self.status_box.setStyleSheet("background: #ecfdf5; color: #166534; border-radius: 8px; font-size: 26px; font-weight: 800;")
+            self.status_box.setStyleSheet(
+                "background: #f3f5f7; color: #1324a2; border: 1px solid #80cde1; "
+                "border-radius: 8px; font-size: 22px; font-weight: 800;"
+            )
         self.active_episode.setText(f"当前 episode: {task}/{index} ({state})")
 
     def _episode_saved(self, task: str, index: int, output_dir: str, frames: int) -> None:
@@ -1013,6 +1123,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._local_save_queue_count = int(count)
         self._refresh_sync_backlog()
 
+    def _set_validation_status(self, text: str) -> None:
+        self.validation_status.setText(text)
+        self.validation_status.setToolTip(text)
+
     def _refresh_sync_backlog(self) -> None:
         pending_sync = self.controller.pending_sync_count()
         if self.controller.options.direct_to_output_root:
@@ -1027,6 +1141,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _stack_state_changed(self, state: str) -> None:
         self.stack_state.setText(f"机器人栈: {state}")
+        self.start_stack_btn.setEnabled(state in {"stopped", "error"})
+        self.stop_stack_btn.setEnabled(state not in {"stopped", "stopping"})
 
     def _set_status(self, text: str) -> None:
         self.capture_state.setText(f"状态: {text}")
@@ -1153,6 +1269,14 @@ class MainWindow(QtWidgets.QMainWindow):
         target: str,
     ) -> QtCore.QProcessEnvironment:
         env = QtCore.QProcessEnvironment.systemEnvironment()
+        for secret_name in (
+            "FRANKA_GUI_SUDO_PASSWORD",
+            "FRANKA_SUDO_PASSWORD",
+            "BI_ARM_LOCAL_SUDO_PASSWORD",
+            "BI_ARM_REMOTE_SUDO_PASSWORD",
+            "BI_ARM_SSH_PASSWORD",
+        ):
+            env.remove(secret_name)
         env.insert("PYTHONUNBUFFERED", "1")
         env.insert("DEFAULT_REPLAY_SPEED", _format_float(options.speed))
         env.insert("DEFAULT_GRIPPER_SPEED", _format_float(options.gripper_speed))
@@ -1167,15 +1291,9 @@ class MainWindow(QtWidgets.QMainWindow):
         env.insert("DEFAULT_APPROACH_START_HZ", _format_float(options.approach_start_hz))
 
         if target == "dual":
-            password = _read_gui_password()
-            if password:
-                for key in (
-                    "BI_ARM_LOCAL_SUDO_PASSWORD",
-                    "BI_ARM_REMOTE_SUDO_PASSWORD",
-                    "BI_ARM_SSH_PASSWORD",
-                ):
-                    if not env.value(key):
-                        env.insert(key, password)
+            password_file = _gui_password_file()
+            if password_file and not env.value("BI_ARM_LOCAL_SUDO_PASSWORD_FILE"):
+                env.insert("BI_ARM_LOCAL_SUDO_PASSWORD_FILE", password_file)
         return env
 
     def _show_replay_log_dialog(
@@ -1713,18 +1831,18 @@ def _shell_quote(value: str) -> str:
     return "'" + value.replace("'", "'\"'\"'") + "'"
 
 
-def _read_gui_password() -> Optional[str]:
-    password = os.environ.get("FRANKA_GUI_SUDO_PASSWORD")
-    if password:
-        return password
+def _gui_password_file() -> Optional[str]:
     password_file = os.environ.get("FRANKA_GUI_SUDO_PASSWORD_FILE")
     if not password_file:
         return None
     path = Path(password_file).expanduser()
     try:
-        return path.read_text(encoding="utf-8").strip() or None
+        stat = path.stat()
     except OSError:
         return None
+    if not path.is_file() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+        return None
+    return str(path)
 
 
 def _mode_label(mode: str) -> str:

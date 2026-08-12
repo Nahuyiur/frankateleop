@@ -3,6 +3,7 @@
 
 # large files
 *.png
+!franka_gui/assets/muka_logo.png
 *.gif
 *.avi
 *.bag

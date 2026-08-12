@@ -22,6 +22,10 @@ class ManagedProcess:
     log_path: Path
 
 
+class _StartCancelled(RuntimeError):
+    pass
+
+
 class ProcessManager(QtCore.QObject):
     status_changed = QtCore.pyqtSignal(str)
     error = QtCore.pyqtSignal(str)
@@ -46,9 +50,16 @@ class ProcessManager(QtCore.QObject):
         }
         self.log_root = repo_root / "logs" / log_roots[mode]
         self.ready_timeout = int(os.environ.get("GUI_READY_TIMEOUT", "90"))
+        self.pipeline_ready_timeout = int(
+            os.environ.get("GUI_PIPELINE_READY_TIMEOUT", "600")
+        )
         self._processes: Dict[str, ManagedProcess] = {}
         self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._stop_worker: threading.Thread | None = None
+        self._cancel_start = threading.Event()
+        self._cleanup_failed = False
         self._run_log_dir: Path | None = None
 
     @property
@@ -56,17 +67,57 @@ class ProcessManager(QtCore.QObject):
         return self._run_log_dir
 
     def start_stack(self) -> None:
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            self.error.emit("机器人栈正在停止，请等待清理完成后再启动。")
+            return
         if self._worker is not None and self._worker.is_alive():
             self.error.emit("启动流程正在运行中")
             return
+        self._cancel_start.clear()
         self._worker = threading.Thread(target=self._start_stack_worker, daemon=True)
         self._worker.start()
 
     def stop_stack(self) -> None:
-        threading.Thread(target=self._stop_stack_worker, args=(True,), daemon=True).start()
+        if self._stop_worker is not None and self._stop_worker.is_alive():
+            self.status_changed.emit("机器人栈停止流程正在运行中")
+            return
+        self._cancel_start.set()
+        self.stack_state_changed.emit("stopping")
+        self._stop_worker = threading.Thread(
+            target=self._stop_stack_worker,
+            args=(True,),
+            daemon=True,
+        )
+        self._stop_worker.start()
 
-    def stop_stack_blocking(self) -> None:
-        self._stop_stack_worker(False)
+    def stop_stack_blocking(self) -> bool:
+        if not self.cancel_start_blocking():
+            return False
+        stop_worker = self._stop_worker
+        if (
+            stop_worker is not None
+            and stop_worker.is_alive()
+            and stop_worker is not threading.current_thread()
+        ):
+            stop_worker.join(timeout=40.0)
+            if stop_worker.is_alive():
+                self.error.emit("机器人栈停止线程未在 40 秒内完成，拒绝关闭采集窗口。")
+                return False
+        return self._stop_stack_worker(False)
+
+    def cancel_start_blocking(self) -> bool:
+        self._cancel_start.set()
+        worker = self._worker
+        if (
+            worker is not None
+            and worker.is_alive()
+            and worker is not threading.current_thread()
+        ):
+            worker.join(timeout=40.0)
+            if worker.is_alive():
+                self.error.emit("机器人栈启动/取消线程未在 40 秒内安全结束，拒绝关闭采集窗口。")
+                return False
+        return True
 
     def is_stack_running(self) -> bool:
         labels = {
@@ -87,7 +138,8 @@ class ProcessManager(QtCore.QObject):
         if self.mode == "dual":
             if self.is_stack_running():
                 self._emit_log("Replay 前停止当前 GUI 双臂 1-4 栈；16 replay 脚本会重新启动 1-3。")
-                self._stop_stack_worker(True)
+                if not self._stop_stack_worker(True):
+                    raise RuntimeError("双臂旧控制栈未能安全停止，拒绝启动 Replay。")
             return
         if self.mode == "right" and run_mode == "execute" and self.is_stack_running():
             raise RuntimeError(
@@ -115,6 +167,7 @@ class ProcessManager(QtCore.QObject):
 
     def _start_stack_worker(self) -> None:
         try:
+            self._raise_if_start_cancelled()
             if self.mode == "dual":
                 self._start_dual_stack_worker()
                 return
@@ -126,7 +179,9 @@ class ProcessManager(QtCore.QObject):
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
             self._prepare_sudo()
+            self._raise_if_start_cancelled()
             self._cleanup_stale_pipeline_processes()
+            self._raise_if_start_cancelled()
             self._start_script("1_launch_robot", "1_launch_robot.sh", self._check_robot_grpc_ready)
             self._wait_for_stable_ready(
                 "1_launch_robot",
@@ -142,8 +197,12 @@ class ProcessManager(QtCore.QObject):
                 )
             self._start_script("3_launch_node", "3_launch_node.sh", self._check_robot_zmq_ready)
             self._start_script("4_run_env", "4_run_env.sh", self._check_env_loop_ready)
+            self._cleanup_failed = False
             self.stack_state_changed.emit("running")
             self.status_changed.emit("机器人栈已启动: 1-4 ready")
+        except _StartCancelled:
+            stopped = self._stop_stack_worker(False)
+            self.stack_state_changed.emit("stopped" if stopped else "error")
         except Exception as exc:
             self.error.emit(str(exc))
             self._stop_stack_worker(False)
@@ -151,15 +210,22 @@ class ProcessManager(QtCore.QObject):
 
     def _start_dual_stack_worker(self) -> None:
         try:
+            self._raise_if_start_cancelled()
             self.stack_state_changed.emit("starting")
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
             self._prepare_sudo()
+            self._raise_if_start_cancelled()
             self._cleanup_stale_pipeline_processes()
+            self._raise_if_start_cancelled()
             self._start_dual_stack_script()
+            self._cleanup_failed = False
             self.stack_state_changed.emit("running")
             self.status_changed.emit("双臂机器人栈已启动: left/right 1-4 ready")
+        except _StartCancelled:
+            stopped = self._stop_stack_worker(False)
+            self.stack_state_changed.emit("stopped" if stopped else "error")
         except Exception as exc:
             self.error.emit(str(exc))
             self._stop_stack_worker(False)
@@ -167,38 +233,56 @@ class ProcessManager(QtCore.QObject):
 
     def _start_right_stack_worker(self) -> None:
         try:
+            self._raise_if_start_cancelled()
             self.stack_state_changed.emit("starting")
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
             self._prepare_sudo()
+            self._raise_if_start_cancelled()
             self._cleanup_stale_pipeline_processes()
+            self._raise_if_start_cancelled()
             self._start_right_stack_script()
+            self._cleanup_failed = False
             self.stack_state_changed.emit("running")
             self.status_changed.emit("右臂机器人栈已启动: right 1-4 ready")
+        except _StartCancelled:
+            stopped = self._stop_stack_worker(False)
+            self.stack_state_changed.emit("stopped" if stopped else "error")
         except Exception as exc:
             self.error.emit(str(exc))
             self._stop_stack_worker(False)
             self.stack_state_changed.emit("error")
 
-    def _stop_stack_worker(self, emit_done: bool) -> None:
-        if self.mode == "dual":
-            self._stop_one("15_bi_arm_stack")
+    def _stop_stack_worker(self, emit_done: bool) -> bool:
+        with self._stop_lock:
+            if self.mode == "dual":
+                success = self._stop_one("15_bi_arm_stack")
+                label = "双臂机器人栈"
+            elif self.mode == "right":
+                success = self._stop_one("15_right_arm_stack")
+                label = "右臂机器人栈"
+            else:
+                results = [
+                    self._stop_one(process_label)
+                    for process_label in (
+                        "4_run_env",
+                        "3_launch_node",
+                        "2_launch_gripper",
+                        "1_launch_robot",
+                    )
+                ]
+                success = all(results)
+                label = "机器人栈"
+            success = success and not self._cleanup_failed
+            if not success:
+                self.stack_state_changed.emit("error")
+                self.error.emit(f"{label}未能完成安全清理；请检查日志和残留端口。")
+                return False
             if emit_done:
                 self.stack_state_changed.emit("stopped")
-                self.status_changed.emit("双臂机器人栈已停止")
-            return
-        if self.mode == "right":
-            self._stop_one("15_right_arm_stack")
-            if emit_done:
-                self.stack_state_changed.emit("stopped")
-                self.status_changed.emit("右臂机器人栈已停止")
-            return
-        for label in ("4_run_env", "3_launch_node", "2_launch_gripper", "1_launch_robot"):
-            self._stop_one(label)
-        if emit_done:
-            self.stack_state_changed.emit("stopped")
-            self.status_changed.emit("机器人栈已停止")
+                self.status_changed.emit(f"{label}已停止")
+            return True
 
     def _stop_one_worker(self, label: str) -> None:
         self._stop_one(label)
@@ -210,16 +294,17 @@ class ProcessManager(QtCore.QObject):
         script_name: str,
         ready_check: Callable[[Path], bool],
     ) -> None:
+        self._raise_if_start_cancelled()
         assert self._run_log_dir is not None
         log_path = self._run_log_dir / f"{label}.log"
         script_path = self.repo_root / script_name
         self._emit_log(f"启动 {script_name} ...")
         log = log_path.open("ab")
-        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-        gui_password = _read_sudo_password()
-        if gui_password and not env.get("FRANKA_SUDO_PASSWORD"):
-            env["FRANKA_SUDO_PASSWORD"] = gui_password
-            self._emit_log(f"{script_name} 已使用 GUI 私有密码配置传递 sudo 凭据")
+        env = _sanitized_subprocess_environment(PYTHONUNBUFFERED="1")
+        password_file = _sudo_password_file()
+        if password_file and not env.get("FRANKA_SUDO_PASSWORD_FILE"):
+            env["FRANKA_SUDO_PASSWORD_FILE"] = password_file
+            self._emit_log(f"{script_name} 已使用 GUI 私有 sudo 凭据文件")
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path)],
@@ -233,10 +318,12 @@ class ProcessManager(QtCore.QObject):
         managed = ManagedProcess(label, script_name, proc, log_path)
         with self._lock:
             self._processes[label] = managed
+        self._raise_if_start_cancelled()
         self._wait_until_ready(label, managed, ready_check)
         self._emit_log(f"{label} ready")
 
     def _start_dual_stack_script(self) -> None:
+        self._raise_if_start_cancelled()
         assert self._run_log_dir is not None
         label = "15_bi_arm_stack"
         log_path = self._run_log_dir / f"{label}.log"
@@ -245,22 +332,15 @@ class ProcessManager(QtCore.QObject):
             raise FileNotFoundError(f"未找到双臂启动脚本: {script_path}")
         self._emit_log("启动 15_record_bi_arm_pipeline.sh stack-only ...")
         log = log_path.open("ab")
-        env = {
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-            "BI_ARM_STACK_ONLY": "1",
-            "BI_ARM_RIGHT_ONLY": "0",
-        }
-        gui_password = _read_sudo_password()
-        if gui_password:
-            for key in (
-                "BI_ARM_LOCAL_SUDO_PASSWORD",
-                "BI_ARM_REMOTE_SUDO_PASSWORD",
-                "BI_ARM_SSH_PASSWORD",
-            ):
-                if not env.get(key):
-                    env[key] = gui_password
-            self._emit_log("双臂启动已使用 GUI 私有密码配置传递 sudo/SSH 凭据")
+        env = _sanitized_subprocess_environment(
+            PYTHONUNBUFFERED="1",
+            BI_ARM_STACK_ONLY="1",
+            BI_ARM_RIGHT_ONLY="0",
+        )
+        password_file = _sudo_password_file()
+        if password_file and not env.get("BI_ARM_LOCAL_SUDO_PASSWORD_FILE"):
+            env["BI_ARM_LOCAL_SUDO_PASSWORD_FILE"] = password_file
+            self._emit_log("双臂启动已使用 GUI 私有 sudo 凭据文件")
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path), "gui_stack"],
@@ -275,10 +355,17 @@ class ProcessManager(QtCore.QObject):
         managed = ManagedProcess(label, script_path.name, proc, log_path)
         with self._lock:
             self._processes[label] = managed
-        self._wait_until_ready(label, managed, self._check_bi_arm_stack_ready)
+        self._raise_if_start_cancelled()
+        self._wait_until_ready(
+            label,
+            managed,
+            self._check_bi_arm_stack_ready,
+            timeout=self.pipeline_ready_timeout,
+        )
         self._emit_log(f"{label} ready")
 
     def _start_right_stack_script(self) -> None:
+        self._raise_if_start_cancelled()
         assert self._run_log_dir is not None
         label = "15_right_arm_stack"
         log_path = self._run_log_dir / f"{label}.log"
@@ -287,22 +374,15 @@ class ProcessManager(QtCore.QObject):
             raise FileNotFoundError(f"未找到右臂启动脚本: {script_path}")
         self._emit_log("启动 15_record_bi_arm_pipeline.sh right-only stack-only ...")
         log = log_path.open("ab")
-        env = {
-            **os.environ,
-            "PYTHONUNBUFFERED": "1",
-            "BI_ARM_STACK_ONLY": "1",
-            "BI_ARM_RIGHT_ONLY": "1",
-        }
-        gui_password = _read_sudo_password()
-        if gui_password:
-            for key in (
-                "BI_ARM_LOCAL_SUDO_PASSWORD",
-                "BI_ARM_REMOTE_SUDO_PASSWORD",
-                "BI_ARM_SSH_PASSWORD",
-            ):
-                if not env.get(key):
-                    env[key] = gui_password
-            self._emit_log("右臂启动已使用 GUI 私有密码配置传递 sudo/SSH 凭据")
+        env = _sanitized_subprocess_environment(
+            PYTHONUNBUFFERED="1",
+            BI_ARM_STACK_ONLY="1",
+            BI_ARM_RIGHT_ONLY="1",
+        )
+        password_file = _sudo_password_file()
+        if password_file and not env.get("BI_ARM_LOCAL_SUDO_PASSWORD_FILE"):
+            env["BI_ARM_LOCAL_SUDO_PASSWORD_FILE"] = password_file
+            self._emit_log("右臂启动已使用 GUI 私有 sudo 凭据文件")
         try:
             proc = subprocess.Popen(
                 ["bash", str(script_path), "gui_right_stack"],
@@ -317,7 +397,13 @@ class ProcessManager(QtCore.QObject):
         managed = ManagedProcess(label, script_path.name, proc, log_path)
         with self._lock:
             self._processes[label] = managed
-        self._wait_until_ready(label, managed, self._check_bi_arm_stack_ready)
+        self._raise_if_start_cancelled()
+        self._wait_until_ready(
+            label,
+            managed,
+            self._check_bi_arm_stack_ready,
+            timeout=self.pipeline_ready_timeout,
+        )
         self._emit_log(f"{label} ready")
 
     def _wait_for_stable_ready(
@@ -328,6 +414,7 @@ class ProcessManager(QtCore.QObject):
     ) -> None:
         self._emit_log(f"稳定性检查 {label} ({seconds}s) ...")
         for _ in range(max(1, seconds)):
+            self._raise_if_start_cancelled()
             self._require_managed_alive(label)
             if not ready_check(Path()):
                 managed = self._get_managed(label)
@@ -361,39 +448,71 @@ class ProcessManager(QtCore.QObject):
         label: str,
         managed: ManagedProcess,
         ready_check: Callable[[Path], bool],
+        timeout: int | None = None,
     ) -> None:
+        effective_timeout = self.ready_timeout if timeout is None else timeout
         started = time.time()
         while True:
+            self._raise_if_start_cancelled()
             if managed.process.poll() is not None:
                 raise RuntimeError(
                     f"{label} 在 ready 前退出，日志: {managed.log_path}\n{_tail_file(managed.log_path, 80)}"
                 )
             if ready_check(managed.log_path):
                 return
-            if time.time() - started > self.ready_timeout:
+            if time.time() - started > effective_timeout:
                 raise TimeoutError(
-                    f"{label} 在 {self.ready_timeout}s 内没有 ready，日志: {managed.log_path}\n"
+                    f"{label} 在 {effective_timeout}s 内没有 ready，日志: {managed.log_path}\n"
                     f"{_tail_file(managed.log_path, 80)}"
                 )
             time.sleep(1.0)
 
-    def _stop_one(self, label: str) -> None:
+    def _raise_if_start_cancelled(self) -> None:
+        if self._cancel_start.is_set():
+            raise _StartCancelled("机器人栈启动已取消")
+
+    def _stop_one(self, label: str) -> bool:
         with self._lock:
             managed = self._processes.pop(label, None)
         if managed is None:
-            return
+            return True
         proc = managed.process
-        if proc.poll() is not None:
-            return
+        return_code = proc.poll()
+        if return_code is not None:
+            if label.startswith("15_") and return_code not in (0, 130):
+                self._emit_log(
+                    f"{label} 已以退出码 {return_code} 结束；远程清理状态不可信。"
+                )
+                self._cleanup_failed = True
+                return False
+            return True
         self._emit_log(f"停止 {label} ...")
         pids = _collect_pid_tree(proc.pid)
         if not pids:
-            return
+            return_code = proc.poll()
+            if return_code in (0, 130):
+                return True
+            self._cleanup_failed = True
+            return False
         _kill_pids(pids, signal.SIGTERM)
         try:
-            proc.wait(timeout=3)
+            return_code = proc.wait(timeout=30 if label.startswith("15_") else 8)
         except subprocess.TimeoutExpired:
             _kill_pids(_collect_pid_tree(proc.pid), signal.SIGKILL)
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pass
+            self._emit_log(f"{label} 未在宽限期内退出，已强制终止；清理状态不可信。")
+            self._cleanup_failed = True
+            return False
+        if label.startswith("15_") and return_code not in (0, 130):
+            self._emit_log(
+                f"{label} 退出码 {return_code}；远程清理可能失败，拒绝报告安全停止。"
+            )
+            self._cleanup_failed = True
+            return False
+        return True
 
     def _prepare_sudo(self) -> None:
         if not _command_exists("sudo"):
@@ -704,6 +823,20 @@ def _parse_pid_tokens(text: str) -> list[int]:
     return pids
 
 
+def _sanitized_subprocess_environment(**overrides: str) -> dict[str, str]:
+    env = dict(os.environ)
+    for key in (
+        "FRANKA_GUI_SUDO_PASSWORD",
+        "FRANKA_SUDO_PASSWORD",
+        "BI_ARM_LOCAL_SUDO_PASSWORD",
+        "BI_ARM_REMOTE_SUDO_PASSWORD",
+        "BI_ARM_SSH_PASSWORD",
+    ):
+        env.pop(key, None)
+    env.update(overrides)
+    return env
+
+
 def _read_sudo_password() -> Optional[str]:
     password = os.environ.get("FRANKA_GUI_SUDO_PASSWORD")
     if password:
@@ -713,13 +846,27 @@ def _read_sudo_password() -> Optional[str]:
     if not password_file:
         return None
 
-    path = Path(password_file).expanduser()
-    if not path.exists():
+    validated_path = _sudo_password_file()
+    if not validated_path:
         return None
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return Path(validated_path).read_text(encoding="utf-8").strip()
     except OSError:
         return None
+
+
+def _sudo_password_file() -> Optional[str]:
+    password_file = os.environ.get("FRANKA_GUI_SUDO_PASSWORD_FILE")
+    if not password_file:
+        return None
+    path = Path(password_file).expanduser()
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    if not path.is_file() or stat.st_uid != os.getuid() or stat.st_mode & 0o077:
+        return None
+    return str(path)
 
 
 def _command_exists(name: str) -> bool:

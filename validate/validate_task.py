@@ -15,6 +15,7 @@ import os
 import pickle
 import re
 import sys
+import threading
 import traceback
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -189,6 +190,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def default_episode_validation_args() -> argparse.Namespace:
+    """Return the default V-script thresholds for one already-resolved episode."""
+    return parse_args(["__single_episode__"])
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     try:
@@ -278,7 +284,21 @@ def natural_path_key(path: Path) -> List[Any]:
     return parts
 
 
-def validate_episode(episode_dir: Path, args: argparse.Namespace) -> EpisodeReport:
+class ValidationCancelled(RuntimeError):
+    pass
+
+
+def _raise_if_cancelled(cancel_event: Optional[threading.Event]) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise ValidationCancelled("episode validation cancelled")
+
+
+def validate_episode(
+    episode_dir: Path,
+    args: argparse.Namespace,
+    cancel_event: Optional[threading.Event] = None,
+) -> EpisodeReport:
+    _raise_if_cancelled(cancel_event)
     report = EpisodeReport(path=str(episode_dir))
     metadata = load_metadata(episode_dir / "metadata.json", report)
     pkl_path = select_pkl(episode_dir, report)
@@ -286,6 +306,7 @@ def validate_episode(episode_dir: Path, args: argparse.Namespace) -> EpisodeRepo
         return report
 
     frames = load_frames(pkl_path, report)
+    _raise_if_cancelled(cancel_event)
     if not frames:
         return report
     report.frame_count = len(frames)
@@ -307,8 +328,17 @@ def validate_episode(episode_dir: Path, args: argparse.Namespace) -> EpisodeRepo
     report.camera_names = camera_names
     validate_camera_sets(camera_names, metadata, report.schema_version, args, report)
     validate_frame_camera_fields(frames, camera_names, metadata, report.schema_version, report)
-    validate_videos(episode_dir, camera_names, frames, metadata, report, args)
+    validate_videos(
+        episode_dir,
+        camera_names,
+        frames,
+        metadata,
+        report,
+        args,
+        cancel_event=cancel_event,
+    )
 
+    _raise_if_cancelled(cancel_event)
     timestamps = validate_timestamps(frames, metadata, report, args)
     validate_robot_timing(frames, report, args)
     validate_actions(frames, timestamps, report, args)
@@ -755,11 +785,14 @@ def validate_videos(
     metadata: Dict[str, Any],
     report: EpisodeReport,
     args: argparse.Namespace,
+    *,
+    cancel_event: Optional[threading.Event] = None,
 ) -> None:
     pkl_count = len(frames)
     pkl_duration = timestamp_duration(frames)
     strict_v3 = is_v3_schema(report.schema_version)
     for camera in camera_names:
+        _raise_if_cancelled(cancel_event)
         path = episode_dir / f"{camera}.mp4"
         if not path.exists():
             continue
@@ -780,6 +813,7 @@ def validate_videos(
             report=report,
             expected_dimensions=expected_dimensions,
             expected_frame_count=pkl_count,
+            cancel_event=cancel_event,
         )
         report.videos[camera] = info
         validate_one_video(
@@ -802,6 +836,7 @@ def validate_videos(
             preview,
             report=report,
             expected_frame_count=pkl_count,
+            cancel_event=cancel_event,
         )
         report.videos[PREVIEW_STEM] = info
         validate_one_video(
@@ -861,6 +896,7 @@ def read_video_info(
     report: Optional[EpisodeReport] = None,
     expected_dimensions: Optional[Tuple[int, int, int]] = None,
     expected_frame_count: Optional[int] = None,
+    cancel_event: Optional[threading.Event] = None,
 ) -> VideoInfo:
     """Sequentially decode every frame and report decoded dimensions/count."""
 
@@ -880,6 +916,7 @@ def read_video_info(
         first_shape: Optional[Tuple[int, int, int]] = None
 
         while True:
+            _raise_if_cancelled(cancel_event)
             ok, frame = cap.read()
             if not ok:
                 break

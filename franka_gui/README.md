@@ -5,6 +5,19 @@
 
 ## 启动
 
+推荐从统一入口启动：
+
+```bash
+bash run_data_collection_hub.sh
+```
+
+首页会恢复上次填写的数采员姓名，但每次启动后仍必须点击一次 `确认身份`。确认后可在
+同一个应用里进入 A 左臂、B 右臂或 C 双臂采集，并可打开只读工时监控和采集数据复核。
+采集窗口的 `返回首页` 只在当前 episode、质量分层、后台保存、保存帧和 Replay 全部结束
+后生效；窗口关闭按钮仍然退出整个应用。
+
+原 A/B/C 脚本继续保留为兼容入口，它们会打开同一个首页并预选对应模式：
+
 ```bash
 bash A_run_left_arm_capture_gui.sh
 ```
@@ -28,6 +41,9 @@ bash C_run_dual_arm_capture_gui.sh
 ```
 
 `14_run_capture_gui.sh` 仅作为旧入口兼容，会转发到 A 单臂 GUI。
+
+所有新 episode 的 `metadata.json` 会增加已确认的 `operator_name`。姓名不会进入路径、
+PKL、视频或 `instruction.txt`，旧数据缺少该字段时 replay、validator 和转换工具仍兼容。
 
 A/B/C 三个 GUI 会分别记住上次填写的任务名、`Text instruction` 和
 `附加 metadata`，下一次打开同一个 GUI 时自动恢复。这个状态只用于恢复界面输入，
@@ -101,9 +117,20 @@ GUI 画面只拉取最新帧并以约 `15 Hz` 刷新，旧预览帧不会排队�
 
    这个文件只应该保存在本机，权限建议为 `600`。也可以用环境变量
    `FRANKA_GUI_SUDO_PASSWORD_FILE` 指向其他私有文件。
-   B/C 会把该凭据同时用于本机 sudo、`pnp@192.168.1.131` SSH 和右机 sudo。
-   SSH 登录身份与右臂 ZMQ 地址彼此独立，因此从用户名不是 `pnp` 的新左机启动时，
-   也不会错误尝试 `<左机用户名>@192.168.1.131`。
+   该凭据只用于当前左机的 sudo，不能复用于右机。B/C 的三类认证彼此独立：
+
+   ```text
+   ~/.franka_gui_sudo_password                 # 当前左机 sudo
+   ~/.ssh/frankateleop_right_ed25519            # pnp@192.168.1.131 SSH 私钥
+   /home/pnp/.franka_gui_sudo_password          # 右机 sudo，仅存放在 131
+   ```
+
+   三个私有文件权限都应为 `600`。170 上专用公钥必须加入 131 的
+   `/home/pnp/.ssh/authorized_keys`。SSH 登录身份固定为 `pnp@192.168.1.131`，与
+   当前左机用户名 `muka` 以及右臂 ZMQ 地址彼此独立。也可以分别使用
+   `FRANKA_GUI_SUDO_PASSWORD_FILE`、`BI_ARM_SSH_IDENTITY_FILE` 和
+   `BI_ARM_REMOTE_SUDO_PASSWORD_FILE` 指向其他私有文件；最后一个路径始终是 131
+   机器上的路径。后台机器人进程只接收密码文件路径，不继承明文密码。
 3. 在中间选择任务名，或点击 `新增采集任务` 输入一个任务名称。
 4. 填写 `Text instruction`，这项不能为空，会保存到 `metadata.json` 和
    `instruction.txt`。可选填写 `附加 metadata`。普通文本会保存为 `user_metadata.note`；JSON object
@@ -117,6 +144,9 @@ GUI 画面只拉取最新帧并以约 `15 Hz` 刷新，旧预览帧不会排队�
 8. 按 `h/l/f` 后，episode 会进入后台 NAS staging 保存队列；相机预览会继续刷新。
    完整写入后会原子发布到最终目录，可以立刻修改 instruction 并按 `s` 录下一条数据。
    关闭 GUI 会等待进行中的保存安全收尾。
+   在最终发布前，GUI 会用 `V_validate_task_data.sh` 的同一套规则对当前单条 episode
+   做核验。`FAIL` 会自动丢弃 staging/local 缓存，不写入质量目录；`WARN` 会正常保存，
+   具体 warning 会显示在中间面板 `NAS 保存中` 标签上方，不弹窗打断采集。
 
 左侧 `Replay` 按钮用于从 GUI 启动已有 replay 脚本。选择 episode 目录、
 `metadata.json` 或 `.pkl.gz` 后，GUI 会先检查数据类型是否匹配当前窗口：
@@ -174,7 +204,21 @@ GUI 保存的数据保持和当前 `franka_capture` 兼容：
 
 `metadata.json` 中会写入 `quality`、`text_instruction` 和
 `relative_episode_dir`，其中 `quality` 为 `High_Quality`、`Low_Quality`
-或 `Failure`。
+或 `Failure`；从统一入口采集时还会写入 `operator_name`。
+
+## 工时监控与数据复核
+
+统一首页可直接打开两个只读工具，也可以独立启动：
+
+```bash
+bash M_run_worktime_monitor.sh
+bash D_review_capture_data.sh /home/pnp/Desktop/Muka_NAS/<task>/<quality>/<index>
+```
+
+工时监控只读取本机 SQLite 账本，不扫描 NAS。数据复核会按同一个 frame index 同步播放
+episode 的所有相机，显示左/右臂 Joint 轨迹、Franka 物理关节限位、V validator 使用的
+单帧跳变与速度阈值、EEF XY/XZ 轨迹、夹爪反馈/目标宽度、关键帧和质量事件。
+详见 `work_monitor/README.md` 与 `data_review/README.md`。
 
 GUI 新采集使用 `franka_single_v3` / `franka_dual_v3`。`pkl.gz` 只保存逐帧
 action、state、timestamp 和 `frame_index`，不再重复保存 RGB 数组；图像由同目录

@@ -1,30 +1,11 @@
 #!/bin/bash
 set -e
 
-echo ">>> 激活 conda 环境 polymetis ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate polymetis || { echo "❌ 激活失败，请确认 polymetis 环境存在"; exit 1; }
+conda activate polymetis || { echo "Failed to activate polymetis"; exit 1; }
 
-echo ">>> 使用仓库根目录 teleop ..."
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
 POLY_ROOT="$REPO_ROOT/teleop"
 
-if [[ -z "$POLY_ROOT" ]]; then
-    echo "❌ 当前目录下未找到 teleop 文件夹"
-    exit 1
-fi
-
 SCRIPT_PATH="$POLY_ROOT/experiments/launch_nodes.py"
-if [[ ! -f "$SCRIPT_PATH" ]]; then
-    echo "❌ 未找到脚本：$SCRIPT_PATH"
-    exit 1
-fi
-
-echo ">>> 启动Robot Node ..."
-export FRANKA_ROBOT_NAME="single"
-echo ">>> robot side=$FRANKA_ROBOT_NAME"
-echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
-echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
-echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}"
 python3 "$SCRIPT_PATH" --robot=fr3 --robot_ip=127.0.0.1 "$@"
-#robot_ip是直接连接机器人的主机的IP，如果是本机直连机器人，可以用127.0.0.1代替

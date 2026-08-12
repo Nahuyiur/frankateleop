@@ -18,9 +18,32 @@ LEFT_GRIPPER_PORT="${BI_ARM_LEFT_GRIPPER_PORT:-50054}"
 RIGHT_ROBOT_PORT="${BI_ARM_RIGHT_ROBOT_PORT:-50051}"
 RIGHT_GRIPPER_PORT="${BI_ARM_RIGHT_GRIPPER_PORT:-50053}"
 READY_TIMEOUT="${BI_ARM_READY_TIMEOUT:-120}"
+SSH_COMMAND_RETRIES="${BI_ARM_SSH_COMMAND_RETRIES:-4}"
+SSH_RETRY_DELAY="${BI_ARM_SSH_RETRY_DELAY:-2}"
 SSH_PASSWORD="${BI_ARM_SSH_PASSWORD:-}"
 LOCAL_SUDO_PASSWORD="${BI_ARM_LOCAL_SUDO_PASSWORD:-}"
 REMOTE_SUDO_PASSWORD="${BI_ARM_REMOTE_SUDO_PASSWORD:-}"
+unset BI_ARM_SSH_PASSWORD BI_ARM_LOCAL_SUDO_PASSWORD BI_ARM_REMOTE_SUDO_PASSWORD
+SSH_PASSWORD_FILE="${BI_ARM_SSH_PASSWORD_FILE:-}"
+LOCAL_SUDO_PASSWORD_FILE="${BI_ARM_LOCAL_SUDO_PASSWORD_FILE:-${FRANKA_GUI_SUDO_PASSWORD_FILE:-$HOME/.franka_gui_sudo_password}}"
+REMOTE_SUDO_PASSWORD_FILE="${BI_ARM_REMOTE_SUDO_PASSWORD_FILE:-/home/pnp/.franka_gui_sudo_password}"
+SSH_IDENTITY_FILE="${BI_ARM_SSH_IDENTITY_FILE:-$HOME/.ssh/frankateleop_right_ed25519}"
+if [[ -z "$SSH_PASSWORD" && -n "$SSH_PASSWORD_FILE" && -f "$SSH_PASSWORD_FILE" ]]; then
+    secret_mode="$(stat -c '%a' "$SSH_PASSWORD_FILE")"
+    if [[ "$secret_mode" != "600" && "$secret_mode" != "400" ]]; then
+        echo "ERROR: $SSH_PASSWORD_FILE must have mode 600 or 400" >&2
+        exit 1
+    fi
+    IFS= read -r SSH_PASSWORD < "$SSH_PASSWORD_FILE" || true
+fi
+if [[ -z "$LOCAL_SUDO_PASSWORD" && -f "$LOCAL_SUDO_PASSWORD_FILE" ]]; then
+    secret_mode="$(stat -c '%a' "$LOCAL_SUDO_PASSWORD_FILE")"
+    if [[ "$secret_mode" != "600" && "$secret_mode" != "400" ]]; then
+        echo "ERROR: $LOCAL_SUDO_PASSWORD_FILE must have mode 600 or 400" >&2
+        exit 1
+    fi
+    IFS= read -r LOCAL_SUDO_PASSWORD < "$LOCAL_SUDO_PASSWORD_FILE" || true
+fi
 MOVE_TO_INITIAL_POSE="${BI_ARM_MOVE_TO_INITIAL_POSE:-1}"
 INITIAL_POSE_SOURCE="${FRANKA_INITIAL_POSE_SOURCE:-${BI_ARM_INITIAL_POSE_SOURCE:-auto}}"
 INITIAL_JOINTS_FILE="${FRANKA_INITIAL_JOINTS_FILE:-${BI_ARM_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}}"
@@ -56,6 +79,7 @@ TUNNEL_PID=""
 TUNNEL_LOG=""
 SUDO_KEEPALIVE_PID=""
 SSH_ASKPASS_FILE=""
+LOCAL_SUDO_TEMP_FILE=""
 CLEANING_UP=0
 ENABLE_CLEANUP=0
 
@@ -81,14 +105,20 @@ Environment:
   BI_ARM_RIGHT_RECORD_ZMQ_PORT=6001
   FRANKA_RIGHT_ZMQ_HOST/FRANKA_RIGHT_ZMQ_PORT override the recorder endpoint.
   BI_ARM_READY_TIMEOUT=120
+  BI_ARM_SSH_COMMAND_RETRIES=4
+  BI_ARM_SSH_RETRY_DELAY=2
   BI_ARM_LOG_ROOT=$REPO_ROOT/logs/bi_arm_pipeline
   BI_ARM_CLEAN_STALE=1
   BI_ARM_SYNC_REMOTE_RIGHT_SCRIPTS=1
   BI_ARM_STACK_ONLY=0
   BI_ARM_RIGHT_ONLY=0
   BI_ARM_SSH_PASSWORD=
+  BI_ARM_SSH_PASSWORD_FILE=
+  BI_ARM_SSH_IDENTITY_FILE=~/.ssh/frankateleop_right_ed25519
   BI_ARM_LOCAL_SUDO_PASSWORD=
+  BI_ARM_LOCAL_SUDO_PASSWORD_FILE=~/.franka_gui_sudo_password
   BI_ARM_REMOTE_SUDO_PASSWORD=
+  BI_ARM_REMOTE_SUDO_PASSWORD_FILE=/home/pnp/.franka_gui_sudo_password (path on 131)
   BI_ARM_MOVE_TO_INITIAL_POSE=1
   BI_ARM_INITIAL_POSE_SOURCE=auto
   BI_ARM_INITIAL_JOINTS_FILE=$REPO_ROOT/config/initial_joints.json
@@ -137,17 +167,38 @@ sudo_cmd() {
 setup_ssh_askpass() {
     [[ -z "$SSH_PASSWORD" ]] && return 0
     SSH_ASKPASS_FILE="$LOG_DIR/ssh_askpass.sh"
+    umask 077
     printf '#!/usr/bin/env sh\nprintf "%%s\\n" %s\n' "$(q "$SSH_PASSWORD")" > "$SSH_ASKPASS_FILE"
     chmod 700 "$SSH_ASKPASS_FILE"
+}
+
+provision_local_sudo_file() {
+    [[ -z "$LOCAL_SUDO_PASSWORD" ]] && return 0
+    LOCAL_SUDO_TEMP_FILE="$(mktemp "$LOG_DIR/.local_sudo.XXXXXX")"
+    chmod 600 "$LOCAL_SUDO_TEMP_FILE"
+    printf '%s\n' "$LOCAL_SUDO_PASSWORD" > "$LOCAL_SUDO_TEMP_FILE"
+    LOCAL_SUDO_PASSWORD_FILE="$LOCAL_SUDO_TEMP_FILE"
 }
 
 ssh_cmd() {
     local opts=(
         -o ServerAliveInterval=5
         -o ServerAliveCountMax=3
+        -o ConnectTimeout=8
+        -o ConnectionAttempts=1
         -o NumberOfPasswordPrompts=1
         -o StrictHostKeyChecking=accept-new
     )
+    if [[ -n "$SSH_IDENTITY_FILE" && -f "$SSH_IDENTITY_FILE" ]]; then
+        opts+=(
+            -o IdentitiesOnly=yes
+            -i "$SSH_IDENTITY_FILE"
+        )
+    elif [[ -z "$SSH_PASSWORD" ]]; then
+        echo "ERROR: dedicated SSH identity not found: $SSH_IDENTITY_FILE" >&2
+        echo "Install the 170->131 key, or explicitly configure BI_ARM_SSH_PASSWORD/BI_ARM_SSH_PASSWORD_FILE." >&2
+        return 2
+    fi
     if [[ -n "$SSH_PASSWORD" ]]; then
         setsid env \
             SSH_ASKPASS="$SSH_ASKPASS_FILE" \
@@ -155,8 +206,36 @@ ssh_cmd() {
             DISPLAY=none \
             ssh "${opts[@]}" "$@"
     else
+        opts+=( -o BatchMode=yes )
         ssh "${opts[@]}" "$@"
     fi
+}
+
+provision_remote_sudo_file() {
+    [[ -z "$REMOTE_SUDO_PASSWORD" ]] && return 0
+    local remote_file_q
+    remote_file_q="$(q "$REMOTE_SUDO_PASSWORD_FILE")"
+    log "Provisioning the private remote sudo credential file."
+    printf '%s\n' "$REMOTE_SUDO_PASSWORD" | ssh_cmd "$RIGHT_SSH" \
+        "umask 077; IFS= read -r secret; printf '%s\\n' \"\$secret\" > $remote_file_q; chmod 600 $remote_file_q"
+    REMOTE_SUDO_PASSWORD=""
+}
+
+remote_sudo_command() {
+    local command="$1"
+    local sudo_file_q
+    local cmd
+    sudo_file_q="$(q "$REMOTE_SUDO_PASSWORD_FILE")"
+    cmd=$(cat <<EOF
+sudo_file=$sudo_file_q
+test -f "\$sudo_file"
+mode=\$(stat -c '%a' "\$sudo_file")
+[[ "\$mode" == "600" || "\$mode" == "400" ]]
+IFS= read -r sudo_password < "\$sudo_file"
+printf '%s\n' "\$sudo_password" | sudo -S -p '' $command
+EOF
+)
+    remote_bash "$cmd"
 }
 
 sync_remote_right_scripts() {
@@ -177,13 +256,39 @@ sync_remote_right_scripts() {
     if [[ -f "$INITIAL_JOINTS_FILE" && "$INITIAL_JOINTS_FILE" == "$REPO_ROOT"/* ]]; then
         tar_items+=("${INITIAL_JOINTS_FILE#"$REPO_ROOT"/}")
     fi
-    tar -C "$REPO_ROOT" -cf - "${tar_items[@]}" | \
-        ssh_cmd "$RIGHT_SSH" "mkdir -p $(q "$RIGHT_REPO") && tar -C $(q "$RIGHT_REPO") -xf - && chmod +x $(q "$RIGHT_REPO/right_franka")/*.sh"
+    local attempt rc
+    for ((attempt=1; attempt<=SSH_COMMAND_RETRIES; attempt++)); do
+        if tar -C "$REPO_ROOT" -cf - "${tar_items[@]}" | \
+            ssh_cmd "$RIGHT_SSH" "mkdir -p $(q "$RIGHT_REPO") && tar -C $(q "$RIGHT_REPO") -xf - && chmod +x $(q "$RIGHT_REPO/right_franka")/*.sh"; then
+            return 0
+        else
+            rc="$?"
+        fi
+        if ((rc != 255 || attempt == SSH_COMMAND_RETRIES)); then
+            return "$rc"
+        fi
+        log "WARNING: remote sync transport failed (attempt $attempt/$SSH_COMMAND_RETRIES); retrying in ${SSH_RETRY_DELAY}s." >&2
+        sleep "$SSH_RETRY_DELAY"
+    done
+    return 255
 }
 
 remote_bash() {
     local cmd="$1"
-    ssh_cmd "$RIGHT_SSH" "bash -lc $(q "$cmd")"
+    local attempt rc
+    for ((attempt=1; attempt<=SSH_COMMAND_RETRIES; attempt++)); do
+        if ssh_cmd "$RIGHT_SSH" "bash -lc $(q "$cmd")"; then
+            return 0
+        else
+            rc="$?"
+        fi
+        if ((rc != 255 || attempt == SSH_COMMAND_RETRIES)); then
+            return "$rc"
+        fi
+        log "WARNING: SSH transport failed (attempt $attempt/$SSH_COMMAND_RETRIES); retrying in ${SSH_RETRY_DELAY}s." >&2
+        sleep "$SSH_RETRY_DELAY"
+    done
+    return 255
 }
 
 tail_log() {
@@ -240,16 +345,23 @@ pid_file=$(q "$pid_file")
 label=$(q "$label")
 if [[ -f "\$pid_file" ]]; then
     pid="\$(cat "\$pid_file" 2>/dev/null || true)"
-    if [[ -n "\$pid" ]] && kill -0 "\$pid" 2>/dev/null; then
+    if [[ -n "\$pid" ]] && { kill -0 "\$pid" 2>/dev/null || pgrep -g "\$pid" >/dev/null 2>&1; }; then
         echo "Stopping remote \$label process group: \$pid"
         kill -TERM -"\$pid" 2>/dev/null || kill -TERM "\$pid" 2>/dev/null || true
         sleep 1
-        kill -KILL -"\$pid" 2>/dev/null || kill -KILL "\$pid" 2>/dev/null || true
+        if kill -0 "\$pid" 2>/dev/null || pgrep -g "\$pid" >/dev/null 2>&1; then
+            kill -KILL -"\$pid" 2>/dev/null || kill -KILL "\$pid" 2>/dev/null || true
+            sleep 0.2
+        fi
+        if kill -0 "\$pid" 2>/dev/null || pgrep -g "\$pid" >/dev/null 2>&1; then
+            echo "ERROR: remote \$label process group \$pid is still alive after cleanup" >&2
+            exit 1
+        fi
     fi
 fi
 EOF
 )
-    remote_bash "$cmd" || true
+    remote_bash "$cmd"
 }
 
 kill_port_local() {
@@ -330,19 +442,31 @@ kill_port_remote() {
     cmd=$(cat <<EOF
 label=$(q "$label")
 port=$(q "$port")
-remote_sudo_password=$(q "$REMOTE_SUDO_PASSWORD")
+sudo_file=$(q "$REMOTE_SUDO_PASSWORD_FILE")
+run_sudo() {
+    if sudo -n true >/dev/null 2>&1; then
+        sudo -n "\$@"
+        return
+    fi
+    test -f "\$sudo_file"
+    mode=\$(stat -c '%a' "\$sudo_file")
+    owner=\$(stat -c '%u' "\$sudo_file")
+    [[ "\$owner" == "\$(id -u)" && ( "\$mode" == "600" || "\$mode" == "400" ) ]]
+    IFS= read -r remote_sudo_password < "\$sudo_file"
+    printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' "\$@"
+}
 if ! command -v lsof >/dev/null 2>&1; then
     :
 fi
 pids="\$(
     {
         if command -v lsof >/dev/null 2>&1; then
-            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' lsof -t -iTCP:"\$port" -sTCP:LISTEN 2>/dev/null || true
-            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' lsof -t -i:"\$port" 2>/dev/null || true
+            run_sudo lsof -t -iTCP:"\$port" -sTCP:LISTEN 2>/dev/null || true
+            run_sudo lsof -t -i:"\$port" 2>/dev/null || true
             lsof -t -i:"\$port" 2>/dev/null || true
         fi
         if command -v fuser >/dev/null 2>&1; then
-            printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' fuser -n tcp "\$port" 2>/dev/null | tr ' ' '\n' || true
+            run_sudo fuser -n tcp "\$port" 2>/dev/null | tr ' ' '\n' || true
             fuser -n tcp "\$port" 2>/dev/null | tr ' ' '\n' || true
         fi
         if command -v ss >/dev/null 2>&1; then
@@ -352,13 +476,19 @@ pids="\$(
 )"
 if [[ -n "\$pids" ]]; then
     echo "Cleaning stale remote \$label on port \$port: \$pids"
-    kill -TERM \$pids 2>/dev/null || printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' kill -TERM \$pids 2>/dev/null || true
+    kill -TERM \$pids 2>/dev/null || run_sudo kill -TERM \$pids 2>/dev/null || true
     sleep 1
-    kill -KILL \$pids 2>/dev/null || printf '%s\n' "\$remote_sudo_password" | sudo -S -p '' kill -KILL \$pids 2>/dev/null || true
+    kill -KILL \$pids 2>/dev/null || run_sudo kill -KILL \$pids 2>/dev/null || true
+    sleep 0.2
+    remaining="\$(run_sudo lsof -t -i:"\$port" 2>/dev/null || lsof -t -i:"\$port" 2>/dev/null || true)"
+    if [[ -n "\$remaining" ]]; then
+        echo "ERROR: remote \$label port \$port is still occupied by: \$remaining" >&2
+        exit 1
+    fi
 fi
 EOF
 )
-    remote_bash "$cmd" || true
+    remote_bash "$cmd"
 }
 
 kill_remote_right_teleop_serial_holder() {
@@ -427,9 +557,14 @@ cleanup_local_started_processes() {
 
 cleanup_remote_started_processes() {
     local i
+    local failed=0
     for ((i=${#REMOTE_PID_FILES[@]}-1; i>=0; i--)); do
-        terminate_remote_pid_file "${REMOTE_PID_FILES[$i]}" "${REMOTE_NAMES[$i]}"
+        if ! terminate_remote_pid_file "${REMOTE_PID_FILES[$i]}" "${REMOTE_NAMES[$i]}"; then
+            log "ERROR: failed to clean remote ${REMOTE_NAMES[$i]}"
+            failed=1
+        fi
     done
+    return "$failed"
 }
 
 cleanup_tunnel() {
@@ -443,15 +578,16 @@ cleanup_all() {
     ((ENABLE_CLEANUP == 0)) && return 0
     ((CLEANING_UP == 1)) && return 0
     CLEANING_UP=1
+    local cleanup_failed=0
 
     if [[ "$RIGHT_ONLY" == "1" ]]; then
         log "Cleaning up right-arm pipeline processes ..."
     else
         log "Cleaning up bi-arm pipeline processes ..."
     fi
-    cleanup_tunnel
-    cleanup_local_started_processes
-    cleanup_remote_started_processes
+    cleanup_tunnel || cleanup_failed=1
+    cleanup_local_started_processes || cleanup_failed=1
+    cleanup_remote_started_processes || cleanup_failed=1
 
     if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
         kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -459,7 +595,14 @@ cleanup_all() {
     if [[ -n "$SSH_ASKPASS_FILE" ]]; then
         rm -f "$SSH_ASKPASS_FILE"
     fi
+    if [[ -n "$LOCAL_SUDO_TEMP_FILE" ]]; then
+        rm -f "$LOCAL_SUDO_TEMP_FILE"
+    fi
 
+    if ((cleanup_failed != 0)); then
+        log "ERROR: Cleanup incomplete. Logs: $LOG_DIR"
+        return 1
+    fi
     log "Cleanup done. Logs: $LOG_DIR"
 }
 
@@ -527,9 +670,16 @@ prepare_sudo() {
 prepare_remote() {
     log "Checking remote SSH and repo: $RIGHT_SSH:$RIGHT_REPO"
     remote_bash "test -d $(q "$RIGHT_REPO/right_franka") && test -d $(q "$RIGHT_REPO/teleop") && test -d $(q "$RIGHT_REPO/polymetis")"
+    provision_remote_sudo_file
     if [[ "${BI_ARM_REMOTE_SUDO_VALIDATE:-1}" == "1" ]]; then
         log "Checking remote sudo access."
-        remote_bash "printf '%s\n' $(q "$REMOTE_SUDO_PASSWORD") | sudo -S -p '' -v"
+        if remote_bash "sudo -n true"; then
+            log "Remote sudo is available without a password prompt."
+        elif remote_sudo_command "-v"; then
+            log "Remote sudo credential is valid."
+        else
+            abort "Remote sudo is unavailable. Create $REMOTE_SUDO_PASSWORD_FILE on 131 with mode 600, or provide BI_ARM_REMOTE_SUDO_PASSWORD once to provision it."
+        fi
     fi
 }
 
@@ -743,7 +893,7 @@ start_local_script() {
     (
         cd "$REPO_ROOT"
         export PYTHONUNBUFFERED=1
-        export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
+        export FRANKA_SUDO_PASSWORD_FILE="$LOCAL_SUDO_PASSWORD_FILE"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export FRANKA_INITIAL_POSE_SOURCE="$INITIAL_POSE_SOURCE"
         export FRANKA_INITIAL_JOINTS_FILE="$INITIAL_JOINTS_FILE"
@@ -775,11 +925,20 @@ start_remote_script() {
     local cmd
 
     log "Starting remote $label ..."
+    REMOTE_PID_FILES+=("$pid_file")
+    REMOTE_NAMES+=("$label")
+    REMOTE_LOGS+=("$logfile")
     cmd=$(cat <<EOF
 mkdir -p $(q "$REMOTE_LOG_DIR")
 cd $(q "$RIGHT_REPO/right_franka")
+pid_file=$(q "$pid_file")
+existing_pid="\$(cat "\$pid_file" 2>/dev/null || true)"
+if [[ -n "\$existing_pid" ]] && { kill -0 "\$existing_pid" 2>/dev/null || pgrep -g "\$existing_pid" >/dev/null 2>&1; }; then
+    echo "Remote $(q "$label") already running as process group \$existing_pid"
+    exit 0
+fi
 export PYTHONUNBUFFERED=1
-export FRANKA_SUDO_PASSWORD=$(q "$REMOTE_SUDO_PASSWORD")
+export FRANKA_SUDO_PASSWORD_FILE=$(q "$REMOTE_SUDO_PASSWORD_FILE")
 export FRANKA_MOVE_TO_INITIAL_POSE=$(q "$MOVE_TO_INITIAL_POSE")
 export FRANKA_INITIAL_POSE_SOURCE=$(q "$INITIAL_POSE_SOURCE")
 export FRANKA_INITIAL_JOINTS_FILE=$(q "$REMOTE_INITIAL_JOINTS_FILE")
@@ -791,13 +950,12 @@ export RIGHT_TELEOP_PORT=$(q "$RIGHT_TELEOP_PORT_OVERRIDE")
 export RIGHT_ROBOTIQ_COMPORT=$(q "$RIGHT_ROBOTIQ_COMPORT_OVERRIDE")
 export RIGHT_GRIPPER_SERVER_PORT=$(q "$RIGHT_GRIPPER_PORT")
 nohup setsid bash $(q "$script_name") > $(q "$logfile") 2>&1 < /dev/null &
-echo \$! > $(q "$pid_file")
+new_pid=\$!
+printf '%s\n' "\$new_pid" > "\${pid_file}.tmp.\$\$"
+mv -f "\${pid_file}.tmp.\$\$" "\$pid_file"
 EOF
 )
     remote_bash "$cmd"
-    REMOTE_PID_FILES+=("$pid_file")
-    REMOTE_NAMES+=("$label")
-    REMOTE_LOGS+=("$logfile")
     wait_until_remote_ready "$label" "$pid_file" "$logfile" "$check_fn" "$@"
 }
 
@@ -812,7 +970,7 @@ check_local_script() {
     if ! (
         cd "$REPO_ROOT"
         export PYTHONUNBUFFERED=1
-        export FRANKA_SUDO_PASSWORD="$LOCAL_SUDO_PASSWORD"
+        export FRANKA_SUDO_PASSWORD_FILE="$LOCAL_SUDO_PASSWORD_FILE"
         export FRANKA_MOVE_TO_INITIAL_POSE="$MOVE_TO_INITIAL_POSE"
         export FRANKA_INITIAL_POSE_SOURCE="$INITIAL_POSE_SOURCE"
         export FRANKA_INITIAL_JOINTS_FILE="$INITIAL_JOINTS_FILE"
@@ -843,7 +1001,7 @@ check_remote_script() {
 mkdir -p $(q "$REMOTE_LOG_DIR")
 cd $(q "$RIGHT_REPO/right_franka")
 export PYTHONUNBUFFERED=1
-export FRANKA_SUDO_PASSWORD=$(q "$REMOTE_SUDO_PASSWORD")
+export FRANKA_SUDO_PASSWORD_FILE=$(q "$REMOTE_SUDO_PASSWORD_FILE")
 export FRANKA_MOVE_TO_INITIAL_POSE=$(q "$MOVE_TO_INITIAL_POSE")
 export FRANKA_INITIAL_POSE_SOURCE=$(q "$INITIAL_POSE_SOURCE")
 export FRANKA_INITIAL_JOINTS_FILE=$(q "$REMOTE_INITIAL_JOINTS_FILE")
@@ -968,6 +1126,7 @@ main() {
     fi
 
     setup_ssh_askpass
+    provision_local_sudo_file
     prepare_sudo
     prepare_remote
     sync_remote_right_scripts
@@ -1014,4 +1173,6 @@ main() {
     run_recording "$task" "$output_root" "${extra_args[@]}"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

@@ -6,13 +6,14 @@ import gzip
 import json
 import os
 import pickle
+import shutil
 import traceback
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 from PyQt6 import QtCore
 
@@ -26,14 +27,30 @@ SAVE_ERROR_CACHE_MISSING = "cache_missing"
 SAVE_ERROR_FINAL_CONFLICT = "final_conflict"
 SAVE_ERROR_LOCAL_WRITE_FAILED = "local_write_failed"
 SAVE_ERROR_PUBLISH_FAILED = "publish_failed"
+SAVE_ERROR_VALIDATION_FAILED = "validation_failed"
+SAVE_ERROR_VALIDATION_RUNTIME_FAILED = "validation_runtime_failed"
 SAVE_ERROR_UNKNOWN = "unknown"
 
 
 class EpisodeSaveError(RuntimeError):
-    def __init__(self, message: str, *, kind: str, cache_dir: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        kind: str,
+        cache_dir: str = "",
+        validation_issues: Optional[List[str]] = None,
+    ) -> None:
         super().__init__(message)
         self.kind = kind
         self.cache_dir = cache_dir
+        self.validation_issues = list(validation_issues or [])
+
+
+@dataclass(frozen=True)
+class EpisodeValidationResult:
+    status: str
+    issues: List[str]
 
 
 @dataclass
@@ -51,6 +68,7 @@ class EpisodeSaveRequest:
     local_cache_dir: str = ""
     publish_from_cache: bool = False
     direct_to_output_root: bool = False
+    work_attempt_id: str = ""
 
     @property
     def relative_episode_dir(self) -> Path:
@@ -71,6 +89,8 @@ class AsyncEpisodeSaver(QtCore.QObject):
     save_started = QtCore.pyqtSignal(str, int, str)
     save_finished = QtCore.pyqtSignal(str, int, str, int)
     save_failed = QtCore.pyqtSignal(str, int, str, str, str)
+    validation_started = QtCore.pyqtSignal(str, int, str)
+    validation_finished = QtCore.pyqtSignal(str, int, str, list)
     queue_changed = QtCore.pyqtSignal(int)
 
     def __init__(self, max_workers: int = 1, parent: QtCore.QObject | None = None) -> None:
@@ -94,7 +114,12 @@ class AsyncEpisodeSaver(QtCore.QObject):
         self._increment_pending()
         try:
             self.save_started.emit(request.task, request.index, output_dir)
-            future = self._executor.submit(_save_episode, request)
+            future = self._executor.submit(
+                _save_episode,
+                request,
+                validation_started=self.validation_started.emit,
+                validation_finished=self.validation_finished.emit,
+            )
         except Exception:
             self.queue_changed.emit(self._decrement_pending())
             raise
@@ -134,7 +159,12 @@ class AsyncEpisodeSaver(QtCore.QObject):
             self.queue_changed.emit(self._decrement_pending())
 
 
-def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
+def _save_episode(
+    request: EpisodeSaveRequest,
+    *,
+    validation_started: Optional[Callable[[str, int, str], None]] = None,
+    validation_finished: Optional[Callable[[str, int, str, List[str]], None]] = None,
+) -> tuple[Path, int]:
     if not request.local_cache_dir:
         raise EpisodeSaveError(
             "Streamed episode has no local cache directory",
@@ -163,6 +193,24 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
 
     try:
         _write_episode_sidecars(source_episode_dir, request)
+        if validation_started is not None:
+            validation_started(request.task, request.index, str(request.output_dir))
+        validation = _validate_staged_episode(source_episode_dir)
+        if validation_finished is not None:
+            validation_finished(
+                request.task,
+                request.index,
+                validation.status,
+                validation.issues,
+            )
+        if validation.status == "FAIL":
+            _discard_validation_failed_episode(source_episode_dir, request)
+            raise EpisodeSaveError(
+                "Episode failed automatic validation and was discarded before publication: "
+                + "; ".join(validation.issues),
+                kind=SAVE_ERROR_VALIDATION_FAILED,
+                validation_issues=validation.issues,
+            )
         if request.direct_to_output_root:
             saved_episode_dir = _commit_direct_to_output_root(source_episode_dir, request)
         else:
@@ -182,6 +230,65 @@ def _save_episode(request: EpisodeSaveRequest) -> tuple[Path, int]:
 
     request.local_cache_dir = str(saved_episode_dir)
     return saved_episode_dir, len(request.frames)
+
+
+def _validate_staged_episode(episode_dir: Path) -> EpisodeValidationResult:
+    """Run the same default episode checks exposed through V_validate_task_data.sh."""
+    try:
+        from validate.validate_task import default_episode_validation_args, validate_episode
+
+        report = validate_episode(episode_dir, default_episode_validation_args())
+    except Exception as exc:
+        raise EpisodeSaveError(
+            "Automatic episode validation could not run; the episode was not published. "
+            f"Staging cache is preserved at: {episode_dir}. Error: {exc}",
+            kind=SAVE_ERROR_VALIDATION_RUNTIME_FAILED,
+            cache_dir=str(episode_dir),
+        ) from exc
+    return EpisodeValidationResult(
+        status=report.status,
+        issues=[f"{issue.code}: {issue.message}" for issue in report.issues],
+    )
+
+
+def _discard_validation_failed_episode(
+    source_episode_dir: Path,
+    request: EpisodeSaveRequest,
+) -> None:
+    """Remove only the known staging session after a data-quality failure."""
+    source = source_episode_dir.resolve()
+    if request.direct_to_output_root:
+        output_root = Path(request.output_root).expanduser().resolve()
+        recording_root = (output_root / ".recording").resolve()
+        if _is_relative_to(source, recording_root):
+            discard_root = source.parent
+        elif (
+            source.name.startswith(f".partial-{request.index}-")
+            and source.parent == request.output_dir.parent.resolve()
+        ):
+            discard_root = source
+        else:
+            raise EpisodeSaveError(
+                f"Refusing to discard validation-failed episode outside managed staging: {source}",
+                kind=SAVE_ERROR_VALIDATION_FAILED,
+            )
+    else:
+        recording_root = (_cache_root() / ".recording").resolve()
+        if not _is_relative_to(source, recording_root):
+            raise EpisodeSaveError(
+                f"Refusing to discard validation-failed episode outside local staging: {source}",
+                kind=SAVE_ERROR_VALIDATION_FAILED,
+            )
+        discard_root = source.parent
+    shutil.rmtree(discard_root)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _write_episode_sidecars(output_dir: Path, request: EpisodeSaveRequest) -> None:

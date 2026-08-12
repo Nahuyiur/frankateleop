@@ -26,7 +26,7 @@ from typing import Callable, Iterable, Mapping, Sequence, TextIO
 LOGGER = logging.getLogger("franka_sync")
 
 DEFAULT_CACHE_ROOT = Path.home() / "Desktop" / "franka_record_cache"
-DEFAULT_NAS_ROOT = Path("/home/pnp/Desktop/Muka_NAS")
+DEFAULT_NAS_ROOT = Path.home() / "Desktop" / "Muka_NAS"
 OUTBOX_DIR_NAME = "outbox"
 READY_NAME = "READY"
 MANIFEST_NAME = "outbox.json"

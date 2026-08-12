@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import pickle
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,12 @@ try:
 except ImportError as exc:
     raise unittest.SkipTest("pytest is not installed") from exc
 
-from validate.validate_task import parse_args, validate_episode
+from validate.validate_task import (
+    ValidationCancelled,
+    parse_args,
+    read_video_info,
+    validate_episode,
+)
 
 
 WIDTH = 32
@@ -98,6 +104,30 @@ def _write_metadata(episode_dir: Path, metadata: dict[str, Any]) -> None:
     (episode_dir / "metadata.json").write_text(
         json.dumps(metadata), encoding="utf-8"
     )
+
+
+def test_video_validation_can_be_cancelled_between_decoded_frames(
+    monkeypatch,
+) -> None:
+    cancelled = threading.Event()
+
+    class FakeCapture:
+        def isOpened(self):
+            return True
+
+        def get(self, _key):
+            return 30.0
+
+        def read(self):
+            cancelled.set()
+            return True, np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda _path: FakeCapture())
+    with pytest.raises(ValidationCancelled):
+        read_video_info(Path("cancel.mp4"), cancel_event=cancelled)
 
 
 def _validator_args() -> Any:

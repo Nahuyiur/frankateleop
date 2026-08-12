@@ -344,6 +344,9 @@ class fr3Robot(Robot):
         gripper_pos = np.array([joints[-1]])
         gripper_width = float(joints[-1] * self._max_gripper_width)
         return {
+            # Preserve the existing 8-D compatibility contract: 7 arm joints
+            # followed by normalized gripper width.  Callers that only need the
+            # arm explicitly slice the first seven values.
             "joint_positions": joints,
             "joint_velocities": joint_velocities,
             "ee_pos_quat": pos_quat,
