@@ -1,0 +1,436 @@
+{
+  "anchor_source": {
+    "closed_threshold": "min + 0.45 * (max - min)",
+    "pickup": "first frame of selected closed segment",
+    "place": "first frame after selected closed segment",
+    "reason": "Robust to short failed grasp attempts observed in policy episodes 1170 and 1171.",
+    "selection": "maximum planar EEF displacement among sustained closed segments (at least 5 frames)",
+    "signal": "LeRobot 15-fps observation.state.gripper_position"
+  },
+  "artifacts": {
+    "detection_contact_sheet": "/mnt/data/ryh/DAgger/ring_calibration_v1/output_refined/ring_detection_contact_sheet.png",
+    "episode_calibration_rows": "/mnt/data/ryh/DAgger/ring_calibration_v1/output_refined/ring_episode_calibration_rows.json",
+    "overlay_directory": "/mnt/data/ryh/DAgger/ring_calibration_v1/output_refined/overlays",
+    "trajectory_contact_sheet": "/mnt/data/ryh/DAgger/ring_calibration_v1/output_refined/ring_trajectory_contact_sheet.png",
+    "trajectory_overlay_directory": "/mnt/data/ryh/DAgger/ring_calibration_v1/output_refined/trajectory_overlays"
+  },
+  "candidates": {
+    "affine": {
+      "external_policy_eval": {
+        "by_role": {
+          "pick": {
+            "count": 12,
+            "max": 0.047336842625784976,
+            "mean": 0.024383017546102212,
+            "median": 0.02057704880360168,
+            "p90": 0.04121661529813074,
+            "p95": 0.04413012828435664
+          },
+          "place": {
+            "count": 12,
+            "max": 0.03564266794374305,
+            "mean": 0.015179111172066342,
+            "median": 0.011332001007583364,
+            "p90": 0.02701455015222584,
+            "p95": 0.030999717252952596
+          }
+        },
+        "error_m": {
+          "count": 24,
+          "max": 0.047336842625784976,
+          "mean": 0.019781064359084274,
+          "median": 0.01837734584956888,
+          "p90": 0.03776100017326579,
+          "p95": 0.04107169649014756
+        }
+      },
+      "model": {
+        "inlier_count": 145,
+        "matrix": [
+          [
+            -0.002373651453688421,
+            -0.006141793385985638,
+            1.8522498735021216
+          ],
+          [
+            -0.003610017482965239,
+            0.0024565051863467994,
+            0.569203797436028
+          ]
+        ],
+        "sample_count": 164,
+        "type": "affine"
+      },
+      "train": {
+        "by_role": {
+          "pick": {
+            "count": 82,
+            "max": 0.04635579516669281,
+            "mean": 0.013848234929599485,
+            "median": 0.011711862120153484,
+            "p90": 0.0267034871254164,
+            "p95": 0.029526741169592034
+          },
+          "place": {
+            "count": 82,
+            "max": 0.03700076360751163,
+            "mean": 0.0117802894755644,
+            "median": 0.010210753947542322,
+            "p90": 0.02090827756067719,
+            "p95": 0.027204534743862915
+          }
+        },
+        "error_m": {
+          "count": 164,
+          "max": 0.04635579516669281,
+          "mean": 0.012814262202581939,
+          "median": 0.010770608993524545,
+          "p90": 0.025664156060728936,
+          "p95": 0.027890914883242572
+        }
+      },
+      "validation": {
+        "by_role": {
+          "pick": {
+            "count": 20,
+            "max": 0.03567185730872804,
+            "mean": 0.014063989051441591,
+            "median": 0.01287026726034699,
+            "p90": 0.02233272883979641,
+            "p95": 0.02750654449001247
+          },
+          "place": {
+            "count": 20,
+            "max": 0.02603339847364764,
+            "mean": 0.011852918696338699,
+            "median": 0.010332737901913233,
+            "p90": 0.024989071804232012,
+            "p95": 0.02546764172869121
+          }
+        },
+        "error_m": {
+          "count": 40,
+          "max": 0.03567185730872804,
+          "mean": 0.012958453873890146,
+          "median": 0.011888687255217687,
+          "p90": 0.024989071804232012,
+          "p95": 0.02608556810915347
+        }
+      }
+    },
+    "homography": {
+      "external_policy_eval": {
+        "by_role": {
+          "pick": {
+            "count": 12,
+            "max": 0.044393214263779686,
+            "mean": 0.02174730656893555,
+            "median": 0.01667857426711914,
+            "p90": 0.038985429199741135,
+            "p95": 0.04156310057371294
+          },
+          "place": {
+            "count": 12,
+            "max": 0.03783062843623476,
+            "mean": 0.017589958027705906,
+            "median": 0.01273498993420099,
+            "p90": 0.03184838027555578,
+            "p95": 0.03476463865567785
+          }
+        },
+        "error_m": {
+          "count": 24,
+          "max": 0.044393214263779686,
+          "mean": 0.019668632298320724,
+          "median": 0.014919354284702823,
+          "p90": 0.037469334379982976,
+          "p95": 0.039035014323181155
+        }
+      },
+      "model": {
+        "inlier_count": 149,
+        "matrix": [
+          [
+            -0.009304490254736418,
+            -0.011825665748181084,
+            5.602805661382137
+          ],
+          [
+            -0.013368673776805756,
+            0.011619886715212031,
+            1.8104750197193276
+          ],
+          [
+            -0.0007385512889847609,
+            0.022786815687236017,
+            1.0
+          ]
+        ],
+        "sample_count": 164,
+        "type": "homography"
+      },
+      "train": {
+        "by_role": {
+          "pick": {
+            "count": 82,
+            "max": 0.04779250837582198,
+            "mean": 0.014089628240610727,
+            "median": 0.012399001991026719,
+            "p90": 0.02719693968770198,
+            "p95": 0.03159109275528626
+          },
+          "place": {
+            "count": 82,
+            "max": 0.040143267692726824,
+            "mean": 0.011509761038816617,
+            "median": 0.009432188940889291,
+            "p90": 0.021308435119098457,
+            "p95": 0.024944673776302072
+          }
+        },
+        "error_m": {
+          "count": 164,
+          "max": 0.04779250837582198,
+          "mean": 0.012799694639713673,
+          "median": 0.011078743148363962,
+          "p90": 0.0247010238179633,
+          "p95": 0.02845707097037614
+        }
+      },
+      "validation": {
+        "by_role": {
+          "pick": {
+            "count": 20,
+            "max": 0.03781220190579375,
+            "mean": 0.015053734196316903,
+            "median": 0.013682885997876544,
+            "p90": 0.022922412605142564,
+            "p95": 0.0262753586056964
+          },
+          "place": {
+            "count": 20,
+            "max": 0.02996302259849929,
+            "mean": 0.013151149453055464,
+            "median": 0.011129993849290764,
+            "p90": 0.02602592599639963,
+            "p95": 0.02904538260188381
+          }
+        },
+        "error_m": {
+          "count": 40,
+          "max": 0.03781220190579375,
+          "mean": 0.014102441824686179,
+          "median": 0.01334124466406753,
+          "p90": 0.025670920407447728,
+          "p95": 0.029045382601883808
+        }
+      }
+    }
+  },
+  "detector": {
+    "episode_count": 114,
+    "failure_count": 0,
+    "failures": {},
+    "method": "yellow_HSV_contour_pair_left_pick_right_place",
+    "success_count": 114
+  },
+  "image_coordinate_contract": {
+    "camera": "exterior_1",
+    "height": 180,
+    "transform": "native_LJM_direct_resize_320x180_no_inverse_transform",
+    "width": 320
+  },
+  "schema": "ring_pixel_robot_mapping_v1",
+  "selected_model": "affine",
+  "selected_model_payload": {
+    "inlier_count": 145,
+    "matrix": [
+      [
+        -0.002373651453688421,
+        -0.006141793385985638,
+        1.8522498735021216
+      ],
+      [
+        -0.003610017482965239,
+        0.0024565051863467994,
+        0.569203797436028
+      ]
+    ],
+    "sample_count": 164,
+    "type": "affine"
+  },
+  "split": {
+    "external_episode_uids": [
+      "policy_eval/stack_ring/openpi/High_Quality/0",
+      "policy_eval/stack_ring/openpi/High_Quality/1",
+      "policy_eval/stack_ring/openpi/High_Quality/2",
+      "policy_eval/stack_ring/openpi/High_Quality/3",
+      "policy_eval/stack_ring/openpi/High_Quality/4",
+      "policy_eval/stack_ring/openpi/High_Quality/5",
+      "policy_eval/stack_ring/openpi/High_Quality/6",
+      "policy_eval/stack_ring/openwam/High_Quality/0",
+      "policy_eval/stack_ring/openwam/High_Quality/1",
+      "policy_eval/stack_ring/openwam/High_Quality/2",
+      "policy_eval/stack_ring/openwam/High_Quality/3",
+      "policy_eval/stack_ring/openwam/High_Quality/4"
+    ],
+    "external_policy_eval_episode_count": 12,
+    "seed": 43,
+    "train_collection_episode_count": 82,
+    "train_episode_uids": [
+      "collection/stack_ring/teleop/High_Quality/74",
+      "collection/stack_ring/teleop/High_Quality/14",
+      "collection/stack_ring/teleop/High_Quality/35",
+      "collection/stack_ring/teleop/High_Quality/30",
+      "collection/stack_ring/teleop/High_Quality/34",
+      "collection/stack_ring/teleop/High_Quality/85",
+      "collection/stack_ring/teleop/High_Quality/82",
+      "collection/stack_ring/teleop/High_Quality/44",
+      "collection/stack_ring/teleop/High_Quality/8",
+      "collection/stack_ring/teleop/High_Quality/66",
+      "collection/stack_ring/teleop/High_Quality/89",
+      "collection/stack_ring/teleop/High_Quality/57",
+      "collection/stack_ring/teleop/High_Quality/46",
+      "collection/stack_ring/teleop/High_Quality/70",
+      "collection/stack_ring/teleop/High_Quality/102",
+      "collection/stack_ring/teleop/High_Quality/13",
+      "collection/stack_ring/teleop/High_Quality/79",
+      "collection/stack_ring/teleop/High_Quality/31",
+      "collection/stack_ring/teleop/High_Quality/52",
+      "collection/stack_ring/teleop/High_Quality/42",
+      "collection/stack_ring/teleop/High_Quality/25",
+      "collection/stack_ring/teleop/High_Quality/32",
+      "collection/stack_ring/teleop/High_Quality/80",
+      "collection/stack_ring/teleop/High_Quality/67",
+      "collection/stack_ring/teleop/High_Quality/58",
+      "collection/stack_ring/teleop/High_Quality/45",
+      "collection/stack_ring/teleop/High_Quality/81",
+      "collection/stack_ring/teleop/High_Quality/43",
+      "collection/stack_ring/teleop/High_Quality/60",
+      "collection/stack_ring/teleop/High_Quality/11",
+      "collection/stack_ring/teleop/High_Quality/41",
+      "collection/stack_ring/teleop/High_Quality/36",
+      "collection/stack_ring/teleop/High_Quality/62",
+      "collection/stack_ring/teleop/High_Quality/21",
+      "collection/stack_ring/teleop/High_Quality/95",
+      "collection/stack_ring/teleop/High_Quality/15",
+      "collection/stack_ring/teleop/High_Quality/54",
+      "collection/stack_ring/teleop/High_Quality/93",
+      "collection/stack_ring/teleop/High_Quality/16",
+      "collection/stack_ring/teleop/High_Quality/61",
+      "collection/stack_ring/teleop/High_Quality/4",
+      "collection/stack_ring/teleop/High_Quality/100",
+      "collection/stack_ring/teleop/High_Quality/98",
+      "collection/stack_ring/teleop/High_Quality/73",
+      "collection/stack_ring/teleop/High_Quality/27",
+      "collection/stack_ring/teleop/High_Quality/37",
+      "collection/stack_ring/teleop/High_Quality/64",
+      "collection/stack_ring/teleop/High_Quality/50",
+      "collection/stack_ring/teleop/High_Quality/20",
+      "collection/stack_ring/teleop/High_Quality/90",
+      "collection/stack_ring/teleop/High_Quality/84",
+      "collection/stack_ring/teleop/High_Quality/24",
+      "collection/stack_ring/teleop/High_Quality/9",
+      "collection/stack_ring/teleop/High_Quality/23",
+      "collection/stack_ring/teleop/High_Quality/5",
+      "collection/stack_ring/teleop/High_Quality/2",
+      "collection/stack_ring/teleop/High_Quality/18",
+      "collection/stack_ring/teleop/High_Quality/12",
+      "collection/stack_ring/teleop/High_Quality/26",
+      "collection/stack_ring/teleop/High_Quality/51",
+      "collection/stack_ring/teleop/High_Quality/91",
+      "collection/stack_ring/teleop/High_Quality/7",
+      "collection/stack_ring/teleop/High_Quality/78",
+      "collection/stack_ring/teleop/High_Quality/92",
+      "collection/stack_ring/teleop/High_Quality/72",
+      "collection/stack_ring/teleop/High_Quality/56",
+      "collection/stack_ring/teleop/High_Quality/65",
+      "collection/stack_ring/teleop/High_Quality/10",
+      "collection/stack_ring/teleop/High_Quality/76",
+      "collection/stack_ring/teleop/High_Quality/63",
+      "collection/stack_ring/teleop/High_Quality/75",
+      "collection/stack_ring/teleop/High_Quality/59",
+      "collection/stack_ring/teleop/High_Quality/17",
+      "collection/stack_ring/teleop/High_Quality/96",
+      "collection/stack_ring/teleop/High_Quality/83",
+      "collection/stack_ring/teleop/High_Quality/49",
+      "collection/stack_ring/teleop/High_Quality/6",
+      "collection/stack_ring/teleop/High_Quality/22",
+      "collection/stack_ring/teleop/High_Quality/94",
+      "collection/stack_ring/teleop/High_Quality/87",
+      "collection/stack_ring/teleop/High_Quality/39",
+      "collection/stack_ring/teleop/High_Quality/101"
+    ],
+    "validation_collection_episode_count": 20,
+    "validation_episode_uids": [
+      "collection/stack_ring/teleop/High_Quality/38",
+      "collection/stack_ring/teleop/High_Quality/47",
+      "collection/stack_ring/teleop/High_Quality/19",
+      "collection/stack_ring/teleop/High_Quality/77",
+      "collection/stack_ring/teleop/High_Quality/86",
+      "collection/stack_ring/teleop/High_Quality/3",
+      "collection/stack_ring/teleop/High_Quality/0",
+      "collection/stack_ring/teleop/High_Quality/53",
+      "collection/stack_ring/teleop/High_Quality/97",
+      "collection/stack_ring/teleop/High_Quality/68",
+      "collection/stack_ring/teleop/High_Quality/29",
+      "collection/stack_ring/teleop/High_Quality/69",
+      "collection/stack_ring/teleop/High_Quality/28",
+      "collection/stack_ring/teleop/High_Quality/71",
+      "collection/stack_ring/teleop/High_Quality/48",
+      "collection/stack_ring/teleop/High_Quality/55",
+      "collection/stack_ring/teleop/High_Quality/40",
+      "collection/stack_ring/teleop/High_Quality/1",
+      "collection/stack_ring/teleop/High_Quality/88",
+      "collection/stack_ring/teleop/High_Quality/33"
+    ]
+  },
+  "trajectory_projection_qa": {
+    "boundary": "Used only to visualize the interaction segment. Pixel-to-robot mapping is trained and evaluated independently.",
+    "errors_px": {
+      "external_policy_eval": {
+        "count": 24,
+        "max": 10.685598147383812,
+        "mean": 4.703995233920213,
+        "median": 4.11241183663633,
+        "p90": 9.713196876017754,
+        "p95": 9.990730246542716
+      },
+      "train": {
+        "count": 164,
+        "max": 8.174597900426742,
+        "mean": 2.5491446948926457,
+        "median": 2.2832440226895403,
+        "p90": 5.083340892241961,
+        "p95": 5.962724700949486
+      },
+      "validation": {
+        "count": 40,
+        "max": 6.884719689958651,
+        "mean": 2.6526120430412177,
+        "median": 2.1286670598040516,
+        "p90": 5.733009923785447,
+        "p95": 6.507441468528609
+      }
+    },
+    "matrix_4x2": [
+      [
+        -92.0642330420624,
+        -90.33477261875164
+      ],
+      [
+        -207.59359079556242,
+        76.45499717909081
+      ],
+      [
+        120.21832543126743,
+        -62.01448801045137
+      ],
+      [
+        253.78624170824978,
+        190.07318011575478
+      ]
+    ],
+    "type": "affine_xyz_to_pixel"
+  }
+}

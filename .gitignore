@@ -2,12 +2,10 @@
 # keep each item within the sections alphabetical
 
 # large files
-*.png
-!franka_gui/assets/muka_logo.png
-*.gif
 *.avi
 *.bag
 *.db3
+*.gif
 *.hdf5
 *.mkv
 *.mov
@@ -15,18 +13,27 @@
 *.npy
 *.npz
 *.pkl.gz
+*.png
+*.zip
+!franka_gui/assets/muka_logo.png
 
 # mac
 *.DS_Store
+._*
+
+# editors
+.vscode/
 
 # misc
 .franka_gui_sudo_password
+*.bak.*
 *logs*
 *runs*
 *tb_logs*
 *wandb*
 *wandb_logs*
 camera_checks/
+DEPLOYMENT_STATUS.json
 franka_hdf5_data/
 franka_lerobot_data/
 franka_record_data/
@@ -34,6 +41,7 @@ franka_record_data_10hz/
 logs/
 output/
 outputs/*
+nohup.out
 record_data/
 
 # python
