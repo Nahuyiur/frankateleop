@@ -17,6 +17,9 @@ LEFT_ROBOT_PORT="$BI_ARM_LEFT_ROBOT_PORT"
 LEFT_GRIPPER_PORT="$BI_ARM_LEFT_GRIPPER_PORT"
 RIGHT_ROBOT_PORT="$BI_ARM_RIGHT_ROBOT_PORT"
 RIGHT_GRIPPER_PORT="$BI_ARM_RIGHT_GRIPPER_PORT"
+RIGHT_ROBOT_IP="$BI_ARM_RIGHT_ROBOT_IP"
+RIGHT_FCI_PORT="$BI_ARM_RIGHT_FCI_PORT"
+REQUIRE_RIGHT_FCI_READY="$BI_ARM_REQUIRE_RIGHT_FCI_READY"
 READY_TIMEOUT="${BI_ARM_READY_TIMEOUT:-120}"
 SSH_COMMAND_RETRIES="${BI_ARM_SSH_COMMAND_RETRIES:-4}"
 SSH_RETRY_DELAY="${BI_ARM_SSH_RETRY_DELAY:-2}"
@@ -590,7 +593,8 @@ cleanup_all() {
     cleanup_remote_started_processes || cleanup_failed=1
 
     if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
-        kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+        terminate_pid_tree "$SUDO_KEEPALIVE_PID" "sudo keepalive" || true
+        SUDO_KEEPALIVE_PID=""
     fi
     if [[ -n "$SSH_ASKPASS_FILE" ]]; then
         rm -f "$SSH_ASKPASS_FILE"
@@ -681,6 +685,53 @@ prepare_remote() {
             abort "Remote sudo is unavailable. Create $REMOTE_SUDO_PASSWORD_FILE on 131 with mode 600, or provide BI_ARM_REMOTE_SUDO_PASSWORD once to provision it."
         fi
     fi
+}
+
+check_remote_right_fci_ready() {
+    if [[ "$REQUIRE_RIGHT_FCI_READY" != "1" ]]; then
+        log "WARNING: right FCI preflight is disabled by BI_ARM_REQUIRE_RIGHT_FCI_READY=$REQUIRE_RIGHT_FCI_READY."
+        return 0
+    fi
+
+    log "Checking right robot FCI: $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT via $RIGHT_SSH"
+    local probe rc
+    local cmd
+    cmd=$(cat <<EOF
+set +e
+timeout 3 bash -c '</dev/tcp/$RIGHT_ROBOT_IP/$RIGHT_FCI_PORT' >/dev/null 2>&1
+fci_rc=\$?
+if [[ \$fci_rc -eq 0 ]]; then
+    echo FCI_READY
+    exit 0
+fi
+timeout 3 bash -c '</dev/tcp/$RIGHT_ROBOT_IP/443' >/dev/null 2>&1
+desk_rc=\$?
+if [[ \$desk_rc -eq 0 ]]; then
+    echo FCI_INACTIVE
+    exit 42
+fi
+echo ROBOT_UNREACHABLE
+exit 43
+EOF
+)
+    if probe="$(remote_bash "$cmd")"; then
+        log "Right robot FCI is ready."
+        return 0
+    else
+        rc="$?"
+    fi
+
+    case "$probe" in
+        *FCI_INACTIVE*)
+            abort "Right robot is reachable at https://$RIGHT_ROBOT_IP, but FCI is not active on port $RIGHT_FCI_PORT. On the right robot Desk: release the brakes, select Execution mode, choose Activate FCI, keep the FCI window open, then start the dual-arm stack again."
+            ;;
+        *ROBOT_UNREACHABLE*)
+            abort "Right robot control cabinet is not reachable from $RIGHT_SSH at $RIGHT_ROBOT_IP. Check the right robot power and the 131-to-control-cabinet Ethernet connection before retrying."
+            ;;
+        *)
+            abort "Unable to verify right robot FCI readiness (exit_code=$rc). Check SSH access to $RIGHT_SSH and the right robot at $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT."
+            ;;
+    esac
 }
 
 conda_python() {
@@ -1129,6 +1180,7 @@ main() {
     provision_local_sudo_file
     prepare_sudo
     prepare_remote
+    check_remote_right_fci_ready
     sync_remote_right_scripts
     cleanup_stale_ports
 
