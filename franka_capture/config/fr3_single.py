@@ -56,19 +56,19 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
     # 按照这个格式后续添加相机
     "left_wrist": CameraConfig(
         name="left_wrist",
-        serial_number="348122072222",
+        serial_number="347622075798",
         fps=30,
         depth=False,
     ),
     "left": CameraConfig(
         name="left",
-        serial_number="347522070848",
+        serial_number="347622072146",
         fps=30,
         depth=False,
     ),
     "middle": CameraConfig(
         name="middle",
-        serial_number="332522072275",
+        serial_number="332322072361",
         fps=30,
         depth=False,
     ),

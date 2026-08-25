@@ -14,9 +14,9 @@ Usage:
   bash open_franka_gui_xpra.sh C [extra GUI args...]
 
 Environment overrides:
-  FRANKA_XPRA_HOST=muka@192.168.1.170
+  FRANKA_XPRA_HOST=muka@192.168.100.67
   FRANKA_XPRA_REPO=/home/muka/frankateleop
-  FRANKA_XPRA_SSH_SOCKET=/tmp/codex-franka-170.sock
+  FRANKA_XPRA_SSH_SOCKET=/tmp/codex-franka-67.sock
   FRANKA_XPRA_DISPLAY=124
   FRANKA_XPRA_SSH="ssh ..."
   FRANKA_XPRA_BIN=/Applications/Xpra.app/Contents/MacOS/Xpra

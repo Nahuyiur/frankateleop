@@ -14,27 +14,27 @@
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
-| `FRANKA_LEFT_HOST` | `192.168.1.170` | 左机地址 |
-| `FRANKA_LEFT_SSH` | `muka@192.168.1.170` | Xpra/左机 SSH 身份 |
+| `FRANKA_LEFT_HOST` | `192.168.100.67` | 左机地址 |
+| `FRANKA_LEFT_SSH` | `muka@192.168.100.67` | Xpra/左机 SSH 身份 |
 | `FRANKA_LEFT_REPO` | `/home/muka/frankateleop` | 左机仓库 |
 | `BI_ARM_RIGHT_HOST` | `192.168.1.131` | 右机地址 |
 | `BI_ARM_RIGHT_SSH` | `pnp@192.168.1.131` | 右机编排身份 |
 | `BI_ARM_RIGHT_REPO` | `/home/pnp/frankateleop` | 右机仓库 |
-| `FRANKA_XPRA_SSH_SOCKET` | `/tmp/codex-franka-170.sock` | macOS 到 170 的复用 socket |
+| `FRANKA_XPRA_SSH_SOCKET` | `/tmp/codex-franka-67.sock` | macOS 到 100.67 的复用 socket |
 
-Xpra 的 host、repo、socket 必须作为同一组修改；这些值不能用于覆盖 131 的右臂目标。只有默认的 `muka@192.168.1.170` 会自动尝试 `/tmp/codex-franka-170.sock`；自定义 host 未显式配置 socket 时会使用普通 SSH，避免误走旧的 ControlMaster 连接。
+Xpra 的 host、repo、socket 必须作为同一组修改；这些值不能用于覆盖 131 的右臂目标。只有默认的 `muka@192.168.100.67` 会自动尝试 `/tmp/codex-franka-67.sock`；自定义 host 未显式配置 socket 时会使用普通 SSH，避免误走旧的 ControlMaster 连接。
 
 ## 端口契约
 
 | 场景 | 位置 | robot gRPC | gripper gRPC | robot ZMQ |
 | --- | --- | ---: | ---: | ---: |
-| A 单臂 | 170 | 50051 | 50052 | 6001 |
-| C 左臂 | 170 | 50052 | 50054 | 6002 |
+| A 单臂 | 100.67 | 50051 | 50052 | 6001 |
+| C 左臂 | 100.67 | 50052 | 50054 | 6002 |
 | B/C 右臂 | 131 | 50051 | 50053 | 6001 |
 
 跨机辅助端口：
 
-- `BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001`：170 本地到 131 `6001` 的 SSH 隧道。
+- `BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001`：100.67 本地到 131 `6001` 的 SSH 隧道。
 - `BI_ARM_RIGHT_LOCAL_GRIPPER_PORT=15053`：双臂 Replay 使用的右夹爪本地转发端口。
 - `FRANKA_RIGHT_ZMQ_HOST/PORT`：GUI/录制读取右臂状态的 endpoint，默认 `192.168.1.131:6001`。
 
@@ -75,4 +75,4 @@ bash remote/open_franka_gui_xpra.sh --help
 bash M_run_worktime_monitor.sh --help
 ```
 
-真实硬件启动前还需现场确认：170/131 可达、NAS 已挂载、串口唯一、机器人处于可控状态、目标端口无残留进程。文档中的默认值不代表当前服务已经 ready。
+真实硬件启动前还需现场确认：100.67/131 可达、NAS 已挂载、串口唯一、机器人处于可控状态、目标端口无残留进程。文档中的默认值不代表当前服务已经 ready。

@@ -63,16 +63,31 @@ def test_runtime_defaults_preserve_production_topology(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        "muka@192.168.1.170",
+        "muka@192.168.100.67",
         "/home/muka/frankateleop",
         "pnp@192.168.1.131",
         "/home/pnp/frankateleop",
         "6002",
         "6001",
-        "muka@192.168.1.170",
+        "muka@192.168.100.67",
         "/home/muka/frankateleop",
-        "/tmp/codex-franka-170.sock",
+        "/tmp/codex-franka-67.sock",
     ]
+
+
+def test_left_camera_serials_match_the_new_hardware() -> None:
+    from franka_capture.config.fr3_single import DEFAULT_CAMERAS
+
+    expected = {
+        "left_wrist": "347622075798",
+        "left": "347622072146",
+        "middle": "332322072361",
+    }
+    assert {
+        name: DEFAULT_CAMERAS[name].serial_number for name in expected
+    } == expected
+    assert all(DEFAULT_CAMERAS[name].dim == (640, 480) for name in expected)
+    assert all(DEFAULT_CAMERAS[name].fps == 30 for name in expected)
 
 
 def test_runtime_file_is_lower_priority_than_explicit_environment(tmp_path: Path) -> None:
@@ -145,7 +160,7 @@ def test_xpra_help_uses_current_left_machine() -> None:
         stderr=subprocess.STDOUT,
         check=True,
     )
-    assert "FRANKA_XPRA_HOST=muka@192.168.1.170" in result.stdout
+    assert "FRANKA_XPRA_HOST=muka@192.168.100.67" in result.stdout
     assert "FRANKA_XPRA_REPO=/home/muka/frankateleop" in result.stdout
     assert "192.168.1.114" not in result.stdout
 
@@ -226,7 +241,7 @@ def test_runtime_file_reaches_gui_record_and_replay_entries(
 def test_runtime_file_reaches_xpra_entry(tmp_path: Path) -> None:
     config_file = tmp_path / "runtime.env"
     config_file.write_text(
-        "FRANKA_XPRA_HOST=operator@10.20.30.170\n"
+        "FRANKA_XPRA_HOST=operator@10.20.30.67\n"
         "FRANKA_XPRA_REPO=/srv/frankateleop\n",
         encoding="utf-8",
     )
@@ -256,8 +271,8 @@ def test_runtime_file_reaches_xpra_entry(tmp_path: Path) -> None:
         stderr=subprocess.STDOUT,
         check=True,
     )
-    assert "ssh://operator@10.20.30.170/124" in result.stdout
+    assert "ssh://operator@10.20.30.67/124" in result.stdout
     assert "Remote repo: /srv/frankateleop" in result.stdout
     assert "cd\\ /srv/frankateleop" in result.stdout
     assert "--ssh=ssh" in result.stdout
-    assert "codex-franka-170.sock" not in result.stdout
+    assert "codex-franka-67.sock" not in result.stdout

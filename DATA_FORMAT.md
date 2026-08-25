@@ -389,7 +389,7 @@ franka_capture/config/fr3_single.py
 ```python
 "left_wrist": CameraConfig(
     name="left_wrist",
-    serial_number="348122072222",
+    serial_number="347622075798",
     fps=30,
     depth=False,
 ),

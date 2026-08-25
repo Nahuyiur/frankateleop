@@ -5,7 +5,7 @@
 | 脚本 | 职责 | 是否控制硬件 |
 | --- | --- | --- |
 | `A_run_left_arm_capture_gui.sh` | 启动 Hub 并预选 A 左臂模式 | 可，由 GUI 显式启动栈 |
-| `B_run_right_arm_capture_gui.sh` | 启动 Hub 并预选 B 右臂模式；170 编排 131 | 可 |
+| `B_run_right_arm_capture_gui.sh` | 启动 Hub 并预选 B 右臂模式；100.67 编排 131 | 可 |
 | `C_run_dual_arm_capture_gui.sh` | 启动 Hub 并预选 C 双臂模式 | 可 |
 | `run_data_collection_hub.sh` | 不预选模式的统一入口；身份、采集、Monitor、Review | 可 |
 | `D_review_capture_data.sh` | 打开数据人工复核窗口 | 否 |
@@ -36,8 +36,8 @@ Hub 内部职责：`franka_gui.hub` 负责统一入口；`ProcessManager` 启停
 | `5_capture_image.sh` | 相机静态截图自检 |
 | `6_record_fr3.sh` | CLI 单臂 30 Hz 录制 |
 | `14_run_capture_gui.sh` | A 入口的兼容转发别名 |
-| `15_record_bi_arm_pipeline.sh` | 从 170 编排 left/right `1-4`、SSH/隧道及双臂录制；GUI 以 stack-only 调用 |
-| `left_franka/1-4` | C 模式下 170 左臂低层子栈，端口 50052/50054/6002 |
+| `15_record_bi_arm_pipeline.sh` | 从 100.67 编排 left/right `1-4`、SSH/隧道及双臂录制；GUI 以 stack-only 调用 |
+| `left_franka/1-4` | C 模式下 100.67 左臂低层子栈，端口 50052/50054/6002 |
 | `right_franka/1-4` | B/C 模式下 131 右臂低层子栈，端口 50051/50053/6001 |
 
 这些低层脚本由 GUI/双臂编排器拥有生命周期。除故障定位外，不要与 A/B/C 并行手工启动。
@@ -70,10 +70,10 @@ Hub 内部职责：`franka_gui.hub` 负责统一入口；`ProcessManager` 启停
 
 | 脚本 | 职责 |
 | --- | --- |
-| `remote/open_franka_gui_xpra.sh` | macOS Xpra 客户端，默认登录 170 并选择 A/B/C |
-| `remote/remote_open_gui.sh` | 170 端稳定映射 A/B/C 到当前 GUI 脚本 |
+| `remote/open_franka_gui_xpra.sh` | macOS Xpra 客户端，默认登录 100.67 并选择 A/B/C |
+| `remote/remote_open_gui.sh` | 100.67 端稳定映射 A/B/C 到当前 GUI 脚本 |
 | `scripts/franka_gui_bootstrap.sh` | conda、GUI 依赖、dialout 和共享默认值装配 |
-| `scripts/franka_runtime_config.sh` | Shell 启动层的 170/131、仓库、端口和 Xpra 默认值入口 |
+| `scripts/franka_runtime_config.sh` | Shell 启动层的 100.67/131、仓库、端口和 Xpra 默认值入口 |
 | `scripts/resolve_left_teleop_port.sh` | 解析左侧同构臂串口并拒绝歧义 |
 
 `teleop/` 和 `polymetis/` 是上述启动脚本直接引用的仓库内置依赖，不是独立部署步骤。各 Python 模块的更细参数以对应模块 README 和 `--help` 为准。

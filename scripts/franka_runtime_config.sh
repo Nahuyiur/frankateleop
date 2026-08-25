@@ -39,7 +39,7 @@ franka_runtime_load_env_file() {
 franka_runtime_export_defaults() {
     franka_runtime_load_env_file
 
-    export FRANKA_LEFT_HOST="${FRANKA_LEFT_HOST:-192.168.1.170}"
+    export FRANKA_LEFT_HOST="${FRANKA_LEFT_HOST:-192.168.100.67}"
     export FRANKA_LEFT_SSH="${FRANKA_LEFT_SSH:-muka@$FRANKA_LEFT_HOST}"
     if [[ "$FRANKA_LEFT_SSH" != *@* ]]; then
         export FRANKA_LEFT_SSH="muka@$FRANKA_LEFT_SSH"
@@ -74,8 +74,8 @@ franka_runtime_export_xpra_defaults() {
     export FRANKA_XPRA_HOST="${FRANKA_XPRA_HOST:-$FRANKA_LEFT_SSH}"
     export FRANKA_XPRA_REPO="${FRANKA_XPRA_REPO:-$FRANKA_LEFT_REPO}"
     if [[ -z "${FRANKA_XPRA_SSH_SOCKET+x}" ]]; then
-        if [[ "$FRANKA_XPRA_HOST" == "muka@192.168.1.170" ]]; then
-            FRANKA_XPRA_SSH_SOCKET="/tmp/codex-franka-170.sock"
+        if [[ "$FRANKA_XPRA_HOST" == "muka@192.168.100.67" ]]; then
+            FRANKA_XPRA_SSH_SOCKET="/tmp/codex-franka-67.sock"
         else
             FRANKA_XPRA_SSH_SOCKET=""
         fi

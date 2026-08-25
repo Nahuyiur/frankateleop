@@ -2,19 +2,19 @@
 
 本仓库是 Franka 左臂、右臂和双臂数据采集工作台。生产拓扑固定为：
 
-- `192.168.1.170`：左机，账号 `muka`，仓库 `/home/muka/frankateleop`；运行 GUI、相机、左臂栈和双臂编排。
+- `192.168.100.67`：左机，账号 `muka`，仓库 `/home/muka/frankateleop`；运行 GUI、相机、左臂栈和双臂编排。
 - `192.168.1.131`：右机，账号 `pnp`，仓库 `/home/pnp/frankateleop`；只运行右臂 robot/gripper/node/teleop 子栈。
 
-不要把 131 当作 GUI 登录机，也不要把 170 的账号、仓库或 Xpra socket 套到 131。
+不要把 131 当作 GUI 登录机，也不要把 100.67 的账号、仓库或 Xpra socket 套到 131。
 
 ## 日常启动
 
-在 170 上进入仓库，只选择一个入口：
+在 100.67 上进入仓库，只选择一个入口：
 
 ```bash
 cd /home/muka/frankateleop
 bash A_run_left_arm_capture_gui.sh   # A：左臂
-bash B_run_right_arm_capture_gui.sh  # B：右臂，右臂子栈由 170 编排到 131
+bash B_run_right_arm_capture_gui.sh  # B：右臂，右臂子栈由 100.67 编排到 131
 bash C_run_dual_arm_capture_gui.sh   # C：双臂
 bash run_data_collection_hub.sh      # Hub：先选模式再进入采集
 ```
@@ -29,7 +29,7 @@ bash remote/open_franka_gui_xpra.sh B
 bash remote/open_franka_gui_xpra.sh C
 ```
 
-默认 Xpra 目标是 `muka@192.168.1.170`、`/home/muka/frankateleop`、`/tmp/codex-franka-170.sock`。机器差异通过运行时配置覆盖，见 [运行时配置](docs/runtime-config.md)。
+默认 Xpra 目标是 `muka@192.168.100.67`、`/home/muka/frankateleop`、`/tmp/codex-franka-67.sock`。机器差异通过运行时配置覆盖，见 [运行时配置](docs/runtime-config.md)。
 
 ## 常用辅助命令
 
@@ -56,7 +56,7 @@ Replay 不是运动规划或碰撞检查。执行前必须确认臂侧、标定�
 | --- | --- |
 | A | 左臂采集，预选 `left_wrist,left,middle` |
 | B | 右臂采集，预选 `middle,right,right_wrist`，右臂服务在 131 |
-| C | 双臂采集，使用全部配置相机，170 编排两机 |
+| C | 双臂采集，使用全部配置相机，100.67 编排两机 |
 | Hub | 身份确认、模式选择、采集窗口、工时监控和数据复核的统一入口 |
 | Replay | 读取已保存 episode；默认检查，显式 `--execute` 才发送运动命令 |
 | Validator | 只读检查 schema、文件、视频帧数、时间、相机和机器人状态 |
