@@ -17,6 +17,7 @@
 | `FRANKA_LEFT_HOST` | `192.168.100.67` | 左机地址 |
 | `FRANKA_LEFT_SSH` | `muka@192.168.100.67` | Xpra/左机 SSH 身份 |
 | `FRANKA_LEFT_REPO` | `/home/muka/frankateleop` | 左机仓库 |
+| `LEFT_TELEOP_PORT` | `...FTBJKECV-if00-port0` | 左同构臂 FTDI 稳定串口 |
 | `BI_ARM_RIGHT_HOST` | `192.168.1.131` | 右机地址 |
 | `BI_ARM_RIGHT_SSH` | `pnp@192.168.1.131` | 右机编排身份 |
 | `BI_ARM_RIGHT_REPO` | `/home/pnp/frankateleop` | 右机仓库 |

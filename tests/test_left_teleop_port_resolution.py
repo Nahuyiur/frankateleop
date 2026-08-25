@@ -9,6 +9,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RESOLVER = REPO_ROOT / "scripts" / "resolve_left_teleop_port.sh"
 
 
+def test_default_primary_matches_current_left_teleop_adapter() -> None:
+    text = RESOLVER.read_text(encoding="utf-8")
+    assert "usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0" in text
+    assert "usb-FTDI_USB_TO_RS-485_DAAQM7QD-if00-port0" not in text
+
+
 def _run_resolver(
     tmp_path: Path,
     *,

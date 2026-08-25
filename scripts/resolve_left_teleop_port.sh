@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PRIMARY_PORT="${LEFT_TELEOP_PRIMARY_PORT:-/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJTKP2-if00-port0}"
+PRIMARY_PORT="${LEFT_TELEOP_PRIMARY_PORT:-/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJKECV-if00-port0}"
 FALLBACK_PORT="${LEFT_TELEOP_FALLBACK_PORT:-/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTB2UWSZ-if00-port0}"
 EXPLICIT_PORT="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-}}}"
 
