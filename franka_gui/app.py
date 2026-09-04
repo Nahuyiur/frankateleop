@@ -14,6 +14,8 @@ from franka_capture.config.fr3_single import (
     DEFAULT_ROBOT,
     RIGHT_GUI_CAMERA_NAMES,
     SINGLE_GUI_CAMERA_NAMES,
+    UMI_LEFT_CAMERA_NAMES,
+    UMI_LEFT_CAMERA_PROFILE,
 )
 
 from .capture_controller import CaptureController, CaptureOptions, FIXED_CAPTURE_FPS
@@ -27,6 +29,12 @@ def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mock", action="store_true", help="Use fake cameras and fake robot state.")
     parser.add_argument("--mode", choices=("single", "right", "dual"), default="single")
+    parser.add_argument(
+        "--camera-profile",
+        choices=("realsense-left", UMI_LEFT_CAMERA_PROFILE),
+        default=os.environ.get("FRANKA_CAMERA_PROFILE", "realsense-left"),
+        help="Camera backend/profile. umi-left uses /dev/finger_camera_left via V4L2.",
+    )
     parser.add_argument(
         "--camera-names",
         default="",
@@ -65,9 +73,15 @@ def parse_args():
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[1]
+    if args.camera_profile == UMI_LEFT_CAMERA_PROFILE and args.mode != "single":
+        raise SystemExit("--camera-profile umi-left is only supported with --mode single")
     camera_names = _parse_camera_names(args.camera_names)
     if args.mode == "single" and camera_names is None:
-        camera_names = list(SINGLE_GUI_CAMERA_NAMES)
+        camera_names = (
+            list(UMI_LEFT_CAMERA_NAMES)
+            if args.camera_profile == UMI_LEFT_CAMERA_PROFILE
+            else list(SINGLE_GUI_CAMERA_NAMES)
+        )
     elif args.mode == "right" and camera_names is None:
         camera_names = list(RIGHT_GUI_CAMERA_NAMES)
 
@@ -93,6 +107,7 @@ def main() -> int:
         dual_robot_timeout_ms=args.timeout_ms,
         mock=args.mock,
         direct_to_output_root=args.storage_mode == "direct-nas",
+        camera_profile=args.camera_profile,
     )
 
     if (

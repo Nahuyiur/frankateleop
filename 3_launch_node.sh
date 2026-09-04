@@ -1,30 +1,28 @@
 #!/bin/bash
 set -e
 
-echo ">>> 激活 conda 环境 polymetis ..."
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate polymetis || { echo "❌ 激活失败，请确认 polymetis 环境存在"; exit 1; }
+conda activate polymetis || { echo "Failed to activate polymetis"; exit 1; }
 
-echo ">>> 使用仓库根目录 teleop ..."
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)"
-POLY_ROOT="$REPO_ROOT/teleop"
+POLYMETIS_ROOT="$REPO_ROOT/polymetis"
+POLYMETIS_TORCH_ISOLATION="$POLYMETIS_ROOT/polymetis/build/torch_isolation"
+POLYMETIS_PINOCCHIO_ISOLATION="$POLYMETIS_TORCH_ISOLATION/pinocchio_isolation"
+POLYMETIS_TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
 
-if [[ -z "$POLY_ROOT" ]]; then
-    echo "❌ 当前目录下未找到 teleop 文件夹"
-    exit 1
-fi
+for required_dir in \
+    "$POLYMETIS_TORCH_ISOLATION" \
+    "$POLYMETIS_PINOCCHIO_ISOLATION" \
+    "$POLYMETIS_TORCH_LIB"; do
+    if [[ ! -d "$required_dir" ]]; then
+        echo "Missing Polymetis runtime library directory: $required_dir" >&2
+        exit 1
+    fi
+done
 
-SCRIPT_PATH="$POLY_ROOT/experiments/launch_nodes.py"
-if [[ ! -f "$SCRIPT_PATH" ]]; then
-    echo "❌ 未找到脚本：$SCRIPT_PATH"
-    exit 1
-fi
+export LD_LIBRARY_PATH="$POLYMETIS_PINOCCHIO_ISOLATION:$POLYMETIS_TORCH_ISOLATION:$POLYMETIS_TORCH_LIB:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-echo ">>> 启动Robot Node ..."
-export FRANKA_ROBOT_NAME="single"
-echo ">>> robot side=$FRANKA_ROBOT_NAME"
-echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
-echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
-echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}"
+TELEOP_ROOT="$REPO_ROOT/teleop"
+
+SCRIPT_PATH="$TELEOP_ROOT/experiments/launch_nodes.py"
 python3 "$SCRIPT_PATH" --robot=fr3 --robot_ip=127.0.0.1 "$@"
-#robot_ip是直接连接机器人的主机的IP，如果是本机直连机器人，可以用127.0.0.1代替

@@ -9,8 +9,8 @@ Usage:
   bash open_franka_gui_xpra.sh C [extra GUI args...]
 
 Environment overrides:
-  FRANKA_XPRA_HOST=pnp@192.168.1.114
-  FRANKA_XPRA_REPO=/home/pnp/frankateleop
+  FRANKA_XPRA_HOST=muka@192.168.100.67
+  FRANKA_XPRA_REPO=/home/muka/frankateleop
   FRANKA_XPRA_DISPLAY=124
   FRANKA_XPRA_SSH="ssh ..."
   FRANKA_XPRA_BIN=/Applications/Xpra.app/Contents/MacOS/Xpra
@@ -37,8 +37,8 @@ case "$mode_key" in
         ;;
 esac
 
-host="${FRANKA_XPRA_HOST:-pnp@192.168.1.114}"
-repo="${FRANKA_XPRA_REPO:-/home/pnp/frankateleop}"
+host="${FRANKA_XPRA_HOST:-muka@192.168.100.67}"
+repo="${FRANKA_XPRA_REPO:-/home/muka/frankateleop}"
 display_no="${FRANKA_XPRA_DISPLAY:-$default_display}"
 xpra_bin="${FRANKA_XPRA_BIN:-/Applications/Xpra.app/Contents/MacOS/Xpra}"
 
@@ -53,8 +53,8 @@ fi
 
 if [[ -n "${FRANKA_XPRA_SSH:-}" ]]; then
     ssh_cmd="$FRANKA_XPRA_SSH"
-elif [[ -S /tmp/codex-franka-114.sock ]]; then
-    ssh_cmd="ssh -S /tmp/codex-franka-114.sock -o BatchMode=yes"
+elif [[ -S /tmp/codex-franka-67.sock ]]; then
+    ssh_cmd="ssh -S /tmp/codex-franka-67.sock -o BatchMode=yes"
 else
     ssh_cmd="ssh"
 fi

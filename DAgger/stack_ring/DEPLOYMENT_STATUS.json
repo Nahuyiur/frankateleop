@@ -1,0 +1,73 @@
+{
+  "deployed_at": "2026-07-26T13:21:17.583657+00:00",
+  "deployment_root": "/home/muka/frankateleop/DAgger/stack_ring",
+  "host": "franka-left",
+  "next_gate": "Confirm physical Stack Ring scene, run live camera mapping only, inspect QA, then separately authorize pick hover.",
+  "safety": {
+    "approved_execution_scope": "hover_only",
+    "full_replay_eligible": false,
+    "live_camera_mapping_run": false,
+    "reason": "Current physical Stack Ring scene was not confirmed by the user; deployment stopped after read-only preflight.",
+    "robot_motion_run": false
+  },
+  "schema": "stack_ring_robot_deployment_status_v1",
+  "source_files": {
+    "calibration/ring_calibration_v1.py": {
+      "sha256": "cd7aa94d5d93fea1d0adf6c5b3f74c0f1cb2992cfa7e1e9071eb35a05c82798c"
+    },
+    "calibration/ring_mapping_model_selected.json": {
+      "sha256": "7c5c294ebf021e5f812735dfbfbbe36f353fd5fec081791997b1b99a48f75747"
+    },
+    "calibration/ring_mapping_report.json": {
+      "sha256": "55686e1d9ffaaa80a105be08371aa9997a6cddda213a514e34b6f112e7f6939a"
+    },
+    "run_stack_ring_hover.sh": {
+      "sha256": "aa41b386b625796919464cb0429c5879bb78405fbaecc6abeeacd89cb6c6747e"
+    },
+    "run_stack_ring_mapping.sh": {
+      "sha256": "cb70284a71347814667a73911634b3e987c4d6f67a16a484b6ff9d9f0f14bde3"
+    },
+    "stack_ring_hover_validate.py": {
+      "sha256": "bb3560696da1b7a160340e4223569b33f7ac80ebb908026516c7d4ed8a0cd90f"
+    },
+    "stack_ring_retarget.py": {
+      "sha256": "8ee90784ea3d7cf989b29ad36e9ebc3982350017568825a6b52609fe7bc76241"
+    }
+  },
+  "validation": {
+    "robot_readonly_preflight": {
+      "commands_sent": false,
+      "current_pose": [
+        0.5893197059631348,
+        -0.030425168573856354,
+        0.6008865833282471,
+        3.1130781590005876,
+        -0.033064228264820805,
+        -0.049251434458998364
+      ],
+      "hover_pose": [
+        0.5230937004089355,
+        0.21396587789058685,
+        0.40257277607917785,
+        3.1130781590005876,
+        -0.033064228264820805,
+        -0.049251434458998364
+      ],
+      "plan_frames": 93,
+      "planar_travel_m": 0.25320518834267686,
+      "robot_dofs": 8,
+      "robot_mode": "joint"
+    },
+    "unit_tests": {
+      "failed": 0,
+      "passed": 3
+    },
+    "zero_change_regression": {
+      "max_state_abs_diff": 0.0,
+      "path": "/home/muka/frankateleop/DAgger/stack_ring/outputs/zero_regression_ep0",
+      "pickup_shift_norm_m": 0.0,
+      "place_shift_norm_m": 0.0,
+      "success_marker": true
+    }
+  }
+}

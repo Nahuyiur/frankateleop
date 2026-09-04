@@ -35,6 +35,21 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class V4L2CameraConfig:
+    name: str
+    device_path: str
+    dim: Tuple[int, int] = (640, 480)
+    fps: int = 30
+    pixel_format: str = "MJPG"
+    flip: bool = False
+    read_timeout_ms: int = 3000
+    backend: str = "v4l2"
+
+    def to_dict(self):
+        return asdict(self)
+
+
+@dataclass(frozen=True)
 class RecordingConfig:
     output_root: str = "./record_data"
     video_fps: int = 30
@@ -49,6 +64,8 @@ SINGLE_SCHEMA_VERSION = "franka_single_v2"
 SINGLE_VIDEO_SCHEMA_VERSION = "franka_single_v3"
 SINGLE_GUI_CAMERA_NAMES = ("left_wrist", "left", "middle")
 RIGHT_GUI_CAMERA_NAMES = ("middle", "right", "right_wrist")
+UMI_LEFT_CAMERA_PROFILE = "umi-left"
+UMI_LEFT_CAMERA_NAMES = ("left_wrist",)
 
 # Update these serial numbers after running the camera self-check on the target
 # machine. Depth is disabled by default to minimize USB bandwidth pressure.
@@ -56,25 +73,27 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
     # 按照这个格式后续添加相机
     "left_wrist": CameraConfig(
         name="left_wrist",
-        serial_number="348122072222",
+        serial_number="347622075798",
         fps=30,
         depth=False,
     ),
     "left": CameraConfig(
         name="left",
-        serial_number="347522070848",
+        serial_number="347622072146",
         fps=30,
         depth=False,
     ),
     "middle": CameraConfig(
         name="middle",
-        serial_number="332522072275",
+        serial_number="332322072361",
         fps=30,
         depth=False,
     ),
     "right": CameraConfig(
         name="right",
-        serial_number="332522072875",
+        # 67/muka now controls the right Franka.  Its external camera was
+        # previously registered under the left-arm role on this host.
+        serial_number="347622072146",
         fps=30,
         depth=False,
     ),
@@ -92,8 +111,28 @@ DEFAULT_CAMERAS: Dict[str, CameraConfig] = {
     # )
 }
 
+UMI_LEFT_CAMERAS: Dict[str, V4L2CameraConfig] = {
+    "left_wrist": V4L2CameraConfig(
+        name="left_wrist",
+        device_path="/dev/finger_camera_left",
+        dim=(640, 480),
+        fps=30,
+        pixel_format="MJPG",
+        flip=False,
+    )
+}
+
 DEFAULT_RECORDING = RecordingConfig()
 
 
 def cameras_as_metadata():
     return {name: config.to_dict() for name, config in DEFAULT_CAMERAS.items()}
+
+
+def camera_configs_for_profile(profile: str = "") -> Dict[str, object]:
+    normalized = str(profile or "").strip().lower()
+    if normalized in {"", "default", "realsense-left"}:
+        return dict(DEFAULT_CAMERAS)
+    if normalized == UMI_LEFT_CAMERA_PROFILE:
+        return dict(UMI_LEFT_CAMERAS)
+    raise ValueError(f"Unknown camera profile: {profile!r}")

@@ -1,0 +1,63 @@
+{
+  "format": "droid_delta_eef_replay_v1",
+  "episode_index": 88685,
+  "source_episode_id": "WEIRD+e604eeed+2023-11-28-20h-04m-27s",
+  "tasks": [
+    "Push the lowest button on the black kettle handle",
+    "Press the last button on the kettle"
+  ],
+  "outcome": "success",
+  "episode_valid": true,
+  "endpoint": "arm.left.link.panda_link8",
+  "source_start_joint_position": [
+    0.17157559096813202,
+    -0.3589790165424347,
+    0.31307294964790344,
+    -2.4783072471618652,
+    0.021626697853207588,
+    2.1391568183898926,
+    0.23499886691570282
+  ],
+  "delta_convention": "T_next = T_current @ T_delta (body/right increment)",
+  "rotation_representation": "principal rotation vector in radians",
+  "frames": 107,
+  "fps": 15,
+  "duration_seconds": 7.066666666666666,
+  "calibration": {
+    "exact_source_match": true,
+    "pointworld_calibration_used": true,
+    "camera_calibration_status": "complete"
+  },
+  "metrics": {
+    "translation_path_m": 0.14528133592390466,
+    "rotation_path_rad": 0.687804646463389,
+    "max_translation_step_m": 0.005337425832768708,
+    "max_rotation_step_rad": 0.023419749572803367,
+    "max_reconstruction_position_error_m": 1.251566470838515e-10,
+    "max_reconstruction_rotation_error_rad": 9.30315128500167e-10
+  },
+  "video_segments": {
+    "cam_wrist_left": {
+      "source": "/mnt/core/pub_datasets/DROID/videos/cam_wrist_left/chunk-000/file-168.mp4",
+      "from_timestamp": 9554.533333333333,
+      "to_timestamp": 9561.666666666666,
+      "frames": 107,
+      "fps": 15
+    },
+    "cam_anchor_exterior_1": {
+      "source": "/mnt/core/pub_datasets/DROID/videos/cam_anchor_exterior_1/chunk-000/file-279.mp4",
+      "from_timestamp": 2543.5333333333333,
+      "to_timestamp": 2550.6666666666665,
+      "frames": 107,
+      "fps": 15
+    },
+    "cam_anchor_exterior_2": {
+      "source": "/mnt/core/pub_datasets/DROID/videos/cam_anchor_exterior_2/chunk-000/file-276.mp4",
+      "from_timestamp": 1604.9333333333334,
+      "to_timestamp": 1612.0666666666666,
+      "frames": 107,
+      "fps": 15
+    }
+  },
+  "trajectory_sha256": "5d72c51aa1c0f558a5531670d618b2c8f2db4193c668f18b49e33065baafd53f"
+}

@@ -14,22 +14,22 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
 from PyQt6 import QtCore
 
-from franka_capture.cameras.realsense import create_realsense_cameras
+from franka_capture.cameras import create_cameras
 from franka_capture.config.fr3_dual import (
     DEFAULT_LEFT_ROBOT,
     DEFAULT_RIGHT_ROBOT,
     DUAL_VIDEO_SCHEMA_VERSION,
 )
 from franka_capture.config.fr3_single import (
-    DEFAULT_CAMERAS,
     DEFAULT_ROBOT,
     SINGLE_VIDEO_SCHEMA_VERSION,
+    camera_configs_for_profile,
 )
 from franka_capture.core.robot_zmq_client import RobotZMQClient
 from franka_capture.gripper_fields import gripper_metadata, observation_gripper_fields
@@ -37,6 +37,7 @@ from franka_capture.gripper_fields import gripper_metadata, observation_gripper_
 from .async_episode_saver import (
     CACHE_ROOT_ENV,
     DEFAULT_CACHE_ROOT,
+    SAVE_ERROR_VALIDATION_FAILED,
     AsyncEpisodeSaver,
     EpisodeSaveRequest,
     _validate_path_token,
@@ -75,6 +76,9 @@ class CaptureOptions:
     dual_robot_timeout_ms: int = DEFAULT_LEFT_ROBOT.timeout_ms
     mock: bool = False
     direct_to_output_root: bool = False
+    operator_name: str = ""
+    capture_profile: str = ""
+    camera_profile: str = ""
 
     def __post_init__(self) -> None:
         self.camera_fps = FIXED_CAPTURE_FPS
@@ -134,6 +138,7 @@ class CaptureThread(QtCore.QThread):
     recording_frame_count = QtCore.pyqtSignal(str, int, int)
     episode_ready = QtCore.pyqtSignal(object)
     episode_discarded = QtCore.pyqtSignal(str, int, int)
+    capture_interrupted = QtCore.pyqtSignal(str, int, int)
 
     def __init__(
         self,
@@ -175,8 +180,8 @@ class CaptureThread(QtCore.QThread):
                 cameras = create_mock_cameras(requested_camera_names, self.options.camera_fps)
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
             else:
-                cameras = create_realsense_cameras(
-                    _fixed_fps_camera_configs(self.options.camera_names),
+                cameras = create_cameras(
+                    _fixed_fps_camera_configs(self.options),
                     allow_missing=True,
                 )
                 camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
@@ -187,7 +192,7 @@ class CaptureThread(QtCore.QThread):
             ]
             self.cameras_ready.emit(camera_names)
             if not camera_names:
-                self.status_changed.emit("没有检测到可用 RealSense；相机预览为空，无法开始录制")
+                self.status_changed.emit("没有检测到配置的相机；相机预览为空，无法开始录制")
             elif missing_camera_names:
                 self.status_changed.emit(
                     f"相机预览已启动；缺失相机 {missing_camera_names} 恢复前禁止开始录制"
@@ -267,6 +272,11 @@ class CaptureThread(QtCore.QThread):
                             "采集线程停止时仍有未保存 episode；writer 未能及时退出，"
                             f"临时目录已保留在 {active.spool.session_dir}: {cleanup_error}"
                         )
+                self.capture_interrupted.emit(
+                    active.task,
+                    active.index,
+                    len(active.frames),
+                )
                 self._active = None
             for camera in cameras.values():
                 try:
@@ -470,6 +480,7 @@ class CaptureThread(QtCore.QThread):
             direct_to_output_root=self.options.direct_to_output_root,
             metadata={
                 "source": "franka_gui",
+                "operator_name": self.options.operator_name,
                 "schema_version": (
                     DUAL_VIDEO_SCHEMA_VERSION
                     if self.options.mode == "dual"
@@ -483,6 +494,7 @@ class CaptureThread(QtCore.QThread):
                 **self._robot_metadata(),
                 **gripper_metadata(),
                 "cameras": deepcopy(active.camera_metadata),
+                "camera_profile": self.options.camera_profile or "default",
             },
         )
         self.episode_ready.emit(request)
@@ -682,7 +694,9 @@ class CaptureController(QtCore.QObject):
     active_episode_changed = QtCore.pyqtSignal(str, int, str)
     recording_frame_count = QtCore.pyqtSignal(int)
     save_queue_changed = QtCore.pyqtSignal(int)
+    validation_status_changed = QtCore.pyqtSignal(str)
     episode_saved = QtCore.pyqtSignal(str, int, str, int)
+    work_event = QtCore.pyqtSignal(dict)
 
     def __init__(self, options: CaptureOptions, parent: QtCore.QObject | None = None) -> None:
         super().__init__(parent)
@@ -705,6 +719,7 @@ class CaptureController(QtCore.QObject):
         self._disk_usage_cache_at = 0.0
         self._stale_cache_count = self._reserve_stale_cache_indices()
         self._stale_cache_notice_emitted = False
+        self._work_attempt_id = ""
         self._activity_marker = (
             _record_cache_root() / ".capture-active" / f"{os.getpid()}-{uuid.uuid4().hex}.json"
         )
@@ -722,6 +737,8 @@ class CaptureController(QtCore.QObject):
         )
         self.saver.save_finished.connect(self._on_save_finished)
         self.saver.save_failed.connect(self._on_save_failed)
+        self.saver.validation_started.connect(self._on_validation_started)
+        self.saver.validation_finished.connect(self._on_validation_finished)
 
     def start_preview(self) -> None:
         if self.thread is not None and self.thread.isRunning():
@@ -743,6 +760,7 @@ class CaptureController(QtCore.QObject):
         self.thread.recording_frame_count.connect(self._on_frame_count)
         self.thread.episode_ready.connect(self._on_episode_ready)
         self.thread.episode_discarded.connect(self._on_episode_discarded)
+        self.thread.capture_interrupted.connect(self._on_capture_interrupted)
         self.thread.finished.connect(lambda: self.status_changed.emit("采集线程已退出"))
         self.thread.start()
         self._emit_stale_cache_notice()
@@ -834,6 +852,9 @@ class CaptureController(QtCore.QObject):
         if self._active_state == "quality_pending" and self._pending_quality_request is not None:
             request = self._pending_quality_request
             self._pending_quality_request = None
+            self._emit_work_event("attempt_discarded", request.work_attempt_id)
+            if request.work_attempt_id == self._work_attempt_id:
+                self._work_attempt_id = ""
             if request.quality in QUALITY_DIRS:
                 self._release_reserved(request.task, request.index, request.quality)
             self._cleanup_request_cache(request)
@@ -1022,6 +1043,15 @@ class CaptureController(QtCore.QObject):
         self._active_state = "recording"
         self.active_episode_changed.emit(task, index, "recording")
         self.status_changed.emit(f"开始录制: {task}/{index}")
+        self._work_attempt_id = uuid.uuid4().hex
+        self._emit_work_event(
+            "attempt_start",
+            self._work_attempt_id,
+            operator_name=self.options.operator_name,
+            mode=self.options.capture_profile or self.options.mode,
+            task=task,
+            display_index=index,
+        )
         self._refresh_activity_marker(force=True)
 
     def _on_recording_start_rejected(self, message: str) -> None:
@@ -1036,12 +1066,14 @@ class CaptureController(QtCore.QObject):
         self._active_state = "recording"
         self.active_episode_changed.emit(task, index, "recording")
         self.status_changed.emit(f"继续录制: {task}/{index}")
+        self._emit_work_event("recording_resumed", self._work_attempt_id)
         self._refresh_activity_marker(force=True)
 
     def _on_recording_paused(self, task: str, index: int, frames: int) -> None:
         self._active_state = "paused"
         self.active_episode_changed.emit(task, index, "paused")
         self.status_changed.emit(f"暂停录制: {task}/{index}, frames={frames}")
+        self._emit_work_event("recording_paused", self._work_attempt_id)
         self._refresh_activity_marker(force=True)
 
     def _on_frame_count(self, task: str, index: int, frames: int) -> None:
@@ -1049,6 +1081,7 @@ class CaptureController(QtCore.QObject):
         self._refresh_activity_marker()
 
     def _on_episode_ready(self, request: EpisodeSaveRequest) -> None:
+        request = replace(request, work_attempt_id=self._work_attempt_id)
         self._pending_quality_request = request
         self._active_task = request.task
         self._active_index = request.index
@@ -1058,9 +1091,12 @@ class CaptureController(QtCore.QObject):
             f"episode {request.task}/{request.index} 等待质量分层："
             "按 h 保存到高质量，按 l 保存到低质量，按 f 保存到 Failure，按 d 丢弃。"
         )
+        self._emit_work_event("recording_finished", request.work_attempt_id)
         self._refresh_activity_marker(force=True)
 
     def _on_episode_discarded(self, task: str, index: int, frames: int) -> None:
+        self._emit_work_event("attempt_discarded", self._work_attempt_id)
+        self._work_attempt_id = ""
         self._start_pending = False
         self._active_task = None
         self._active_index = None
@@ -1070,12 +1106,36 @@ class CaptureController(QtCore.QObject):
         self._sync_activity_marker_to_state()
         self._maybe_restore_deferred_quality_request()
 
+    def _on_capture_interrupted(self, task: str, index: int, frames: int) -> None:
+        self._emit_work_event("attempt_interrupted", self._work_attempt_id)
+        self._work_attempt_id = ""
+        self._start_pending = False
+        self._pending_quality_request = None
+        self._active_task = None
+        self._active_index = None
+        self._active_state = "idle"
+        self.active_episode_changed.emit(task, index, "interrupted")
+        self.status_changed.emit(
+            f"采集线程异常结束，episode 已中断: {task}/{index}, frames={frames}"
+        )
+        self._sync_activity_marker_to_state()
+        self._maybe_restore_deferred_quality_request()
+
     def _on_save_finished(self, task: str, index: int, output_dir: str, frame_count: int) -> None:
         quality = Path(output_dir).parent.name
+        request = None
         if quality in QUALITY_DIRS:
-            self._saving_quality_requests.pop((task, quality, index), None)
+            request = self._saving_quality_requests.pop((task, quality, index), None)
             self._release_reserved(task, index, quality)
             self._remember_saved_episode(task, quality, index)
+        if request is not None:
+            self._emit_work_event(
+                "attempt_saved",
+                request.work_attempt_id,
+                quality=quality,
+                episode_index=index,
+                output_dir=output_dir,
+            )
         self.episode_saved.emit(task, index, output_dir, frame_count)
         if self._active_task is None:
             if not self._maybe_restore_deferred_quality_request():
@@ -1090,6 +1150,23 @@ class CaptureController(QtCore.QObject):
         )
         self._sync_activity_marker_to_state()
 
+    def _on_validation_started(self, task: str, index: int, output_dir: str) -> None:
+        self.validation_status_changed.emit(f"核验中: {task}/{index}")
+
+    def _on_validation_finished(
+        self,
+        task: str,
+        index: int,
+        status: str,
+        issues: list,
+    ) -> None:
+        prefix = f"核验 {status}: {task}/{index}"
+        details = [str(item) for item in issues if str(item)]
+        if details:
+            self.validation_status_changed.emit(prefix + " | " + " | ".join(details))
+        else:
+            self.validation_status_changed.emit(prefix)
+
     def _on_save_failed(
         self,
         task: str,
@@ -1102,7 +1179,24 @@ class CaptureController(QtCore.QObject):
         request = None
         if quality in QUALITY_DIRS:
             request = self._saving_quality_requests.pop((task, quality, index), None)
+        if error_kind == SAVE_ERROR_VALIDATION_FAILED:
+            if request is not None:
+                self._emit_work_event(
+                    "attempt_validation_failed",
+                    request.work_attempt_id,
+                )
+                self._release_reserved(task, index, quality)
+            if self._active_task is None:
+                if not self._maybe_restore_deferred_quality_request():
+                    self._active_state = "idle"
+                    self.active_episode_changed.emit(task, index, "validation_failed")
+            self.status_changed.emit(
+                f"核验 FAIL，已丢弃未发布 episode: {task}/{quality}/{index}"
+            )
+            self._sync_activity_marker_to_state()
+            return
         if request is not None:
+            self._emit_work_event("save_error", request.work_attempt_id)
             self._release_reserved(task, index, quality)
             request = self._prepare_quality_retry_request(request)
             message = (
@@ -1148,6 +1242,14 @@ class CaptureController(QtCore.QObject):
         )
         request_key = (request.task, quality, request.index)
         self._saving_quality_requests[request_key] = request
+        self._emit_work_event(
+            "quality_selected",
+            request.work_attempt_id,
+            quality=quality,
+            episode_index=request.index,
+        )
+        if request.work_attempt_id == self._work_attempt_id:
+            self._work_attempt_id = ""
         self._pending_quality_request = None
         self._active_task = None
         self._active_index = None
@@ -1359,6 +1461,18 @@ class CaptureController(QtCore.QObject):
         else:
             self._remove_activity_marker()
 
+    def _emit_work_event(self, event_type: str, attempt_id: str, **payload: Any) -> None:
+        if not attempt_id:
+            return
+        self.work_event.emit(
+            {
+                "event_type": event_type,
+                "attempt_id": attempt_id,
+                "occurred_at": time.time(),
+                "payload": payload,
+            }
+        )
+
     def _refresh_activity_marker(self, force: bool = False) -> None:
         now = time.monotonic()
         if not force and now - self._activity_marker_at < 1.0:
@@ -1393,7 +1507,7 @@ class CaptureController(QtCore.QObject):
 def _selected_camera_names(options: CaptureOptions) -> List[str]:
     if options.camera_names:
         return list(options.camera_names)
-    return list(DEFAULT_CAMERAS.keys())
+    return list(camera_configs_for_profile(options.camera_profile).keys())
 
 
 def _record_cache_root() -> Path:
@@ -1425,14 +1539,15 @@ def _pending_outbox_entries() -> List[tuple[str, str, int]]:
     return entries
 
 
-def _fixed_fps_camera_configs(camera_names: Optional[Sequence[str]] = None):
-    names = list(camera_names) if camera_names else list(DEFAULT_CAMERAS.keys())
-    missing = [name for name in names if name not in DEFAULT_CAMERAS]
+def _fixed_fps_camera_configs(options: CaptureOptions):
+    configured = camera_configs_for_profile(options.camera_profile)
+    names = list(options.camera_names) if options.camera_names else list(configured.keys())
+    missing = [name for name in names if name not in configured]
     if missing:
         raise KeyError(f"Unknown configured camera name(s): {missing}")
     return {
         name: replace(
-            DEFAULT_CAMERAS[name],
+            configured[name],
             fps=FIXED_CAPTURE_FPS,
             read_timeout_ms=GUI_CAMERA_READ_TIMEOUT_MS,
         )

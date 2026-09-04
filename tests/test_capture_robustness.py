@@ -107,6 +107,7 @@ class CaptureRobustnessTest(unittest.TestCase):
                         output_root=temp_dir,
                         mock=True,
                         camera_names=["left", "middle"],
+                        operator_name="Alice",
                     )
                 )
                 payload = {
@@ -172,12 +173,73 @@ class CaptureRobustnessTest(unittest.TestCase):
                         request.metadata["cameras"]["left"]["nested"]["value"],
                         1,
                     )
+                    self.assertEqual(request.metadata["operator_name"], "Alice")
                     self.assertEqual(len(request.frames), 1)
                     shutil.rmtree(Path(request.local_cache_dir).parent)
                 finally:
                     if thread._active is not None:
                         thread._active.spool.discard()
                     thread._dual_read_executor.shutdown(wait=False)
+
+    def test_worktime_events_follow_one_attempt_across_pause_and_discard(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict(os.environ, {CACHE_ROOT_ENV: temp_dir}):
+                controller = CaptureController(
+                    CaptureOptions(
+                        output_root=temp_dir,
+                        mock=True,
+                        camera_names=["middle"],
+                        operator_name="Alice",
+                        capture_profile="A",
+                    )
+                )
+                events = []
+                controller.work_event.connect(events.append)
+                try:
+                    controller._on_recording_started("stack", 4)
+                    controller._on_recording_paused("stack", 4, 10)
+                    controller._on_recording_resumed("stack", 4)
+                    controller._on_episode_discarded("stack", 4, 20)
+                    assert [event["event_type"] for event in events] == [
+                        "attempt_start",
+                        "recording_paused",
+                        "recording_resumed",
+                        "attempt_discarded",
+                    ]
+                    assert len({event["attempt_id"] for event in events}) == 1
+                    assert events[0]["payload"]["operator_name"] == "Alice"
+                    assert events[0]["payload"]["mode"] == "A"
+                finally:
+                    controller.saver.shutdown()
+                    controller._remove_activity_marker()
+
+    def test_capture_thread_interruption_releases_controller_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.dict(os.environ, {CACHE_ROOT_ENV: temp_dir}):
+                controller = CaptureController(
+                    CaptureOptions(
+                        output_root=temp_dir,
+                        mock=True,
+                        camera_names=["middle"],
+                        operator_name="Alice",
+                        capture_profile="A",
+                    )
+                )
+                events = []
+                states = []
+                controller.work_event.connect(events.append)
+                controller.active_episode_changed.connect(
+                    lambda task, index, state: states.append((task, index, state))
+                )
+                try:
+                    controller._on_recording_started("stack", 2)
+                    controller._on_capture_interrupted("stack", 2, 15)
+                    assert events[-1]["event_type"] == "attempt_interrupted"
+                    assert states[-1] == ("stack", 2, "interrupted")
+                    assert controller.has_open_episode_transition() is False
+                finally:
+                    controller.saver.shutdown()
+                    controller._remove_activity_marker()
 
     def test_outbox_indices_are_reserved_when_saving_directory_is_absent(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

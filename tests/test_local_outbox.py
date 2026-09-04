@@ -157,14 +157,14 @@ class LocalOutboxTest(unittest.TestCase):
             self.assertFalse(any(key.endswith("_image") for key in payload["data"][0]))
 
     def test_direct_nas_retry_publishes_preserved_partial(self) -> None:
-        from franka_gui.async_episode_saver import EpisodeSaveRequest, _save_episode
+        from franka_gui import async_episode_saver
 
         with tempfile.TemporaryDirectory() as temp_dir:
             nas_root = Path(temp_dir) / "nas"
             partial = nas_root / "test_task" / "High_Quality" / ".partial-0-retry"
             partial.mkdir(parents=True)
             (partial / "left.mp4").write_bytes(b"already-written-video")
-            request = EpisodeSaveRequest(
+            request = async_episode_saver.EpisodeSaveRequest(
                 output_root=str(nas_root),
                 task="test_task",
                 quality="High_Quality",
@@ -177,7 +177,12 @@ class LocalOutboxTest(unittest.TestCase):
                 direct_to_output_root=True,
                 metadata={"schema_version": "franka_single_v3"},
             )
-            final_episode, _ = _save_episode(request)
+            with mock.patch.object(
+                async_episode_saver,
+                "_validate_staged_episode",
+                return_value=async_episode_saver.EpisodeValidationResult("PASS", []),
+            ):
+                final_episode, _ = async_episode_saver._save_episode(request)
 
             self.assertEqual(final_episode, nas_root / "test_task" / "High_Quality" / "0")
             self.assertTrue((final_episode / "left.mp4").is_file())
@@ -209,6 +214,10 @@ class LocalOutboxTest(unittest.TestCase):
             try:
                 with mock.patch.object(
                     async_episode_saver,
+                    "_validate_staged_episode",
+                    return_value=async_episode_saver.EpisodeValidationResult("PASS", []),
+                ), mock.patch.object(
+                    async_episode_saver,
                     "_fsync_regular_tree",
                     side_effect=OSError("simulated local disk failure"),
                 ):
@@ -217,6 +226,107 @@ class LocalOutboxTest(unittest.TestCase):
                 self.assertTrue(episode_dir.is_dir())
                 self.assertFalse((cache_root / "outbox").exists())
                 self.assertFalse(any(cache_root.rglob("READY")))
+            finally:
+                if old_cache is None:
+                    os.environ.pop("FRANKA_GUI_RECORD_CACHE_ROOT", None)
+                else:
+                    os.environ["FRANKA_GUI_RECORD_CACHE_ROOT"] = old_cache
+
+    def test_validation_failure_discards_staging_before_publish(self) -> None:
+        from franka_gui import async_episode_saver
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_root = root / "cache"
+            session_dir = cache_root / ".recording" / ("b" * 32)
+            episode_dir = session_dir / "episode"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "left.mp4").write_bytes(b"staged-video")
+            request = async_episode_saver.EpisodeSaveRequest(
+                output_root=str(root / "nas"),
+                task="test_task",
+                quality="High_Quality",
+                index=0,
+                frames=[{"frame_index": 0, "timestamp": 1.0}],
+                keyframes=[0],
+                camera_names=["left"],
+                video_fps=30,
+                local_cache_dir=str(episode_dir),
+                metadata={"schema_version": "franka_single_v3"},
+            )
+            old_cache = os.environ.get("FRANKA_GUI_RECORD_CACHE_ROOT")
+            os.environ["FRANKA_GUI_RECORD_CACHE_ROOT"] = str(cache_root)
+            events = []
+            try:
+                validation = async_episode_saver.EpisodeValidationResult(
+                    "FAIL", ["video_frame_count: expected 1, got 0"]
+                )
+                with mock.patch.object(
+                    async_episode_saver,
+                    "_validate_staged_episode",
+                    return_value=validation,
+                ), self.assertRaises(async_episode_saver.EpisodeSaveError) as raised:
+                    async_episode_saver._save_episode(
+                        request,
+                        validation_started=lambda *args: events.append(("start", args)),
+                        validation_finished=lambda *args: events.append(("finish", args)),
+                    )
+                self.assertEqual(
+                    raised.exception.kind,
+                    async_episode_saver.SAVE_ERROR_VALIDATION_FAILED,
+                )
+                self.assertFalse(session_dir.exists())
+                self.assertFalse((root / "nas" / "test_task").exists())
+                self.assertEqual(events[0][0], "start")
+                self.assertEqual(events[1][1][2], "FAIL")
+            finally:
+                if old_cache is None:
+                    os.environ.pop("FRANKA_GUI_RECORD_CACHE_ROOT", None)
+                else:
+                    os.environ["FRANKA_GUI_RECORD_CACHE_ROOT"] = old_cache
+
+    def test_validation_warning_is_published_and_reported(self) -> None:
+        from franka_gui import async_episode_saver
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cache_root = root / "cache"
+            session_dir = cache_root / ".recording" / ("c" * 32)
+            episode_dir = session_dir / "episode"
+            episode_dir.mkdir(parents=True)
+            (episode_dir / "left.mp4").write_bytes(b"staged-video")
+            request = async_episode_saver.EpisodeSaveRequest(
+                output_root=str(root / "nas"),
+                task="test_task",
+                quality="Low_Quality",
+                index=0,
+                frames=[{"frame_index": 0, "timestamp": 1.0}],
+                keyframes=[0],
+                camera_names=["left"],
+                video_fps=30,
+                local_cache_dir=str(episode_dir),
+                metadata={"schema_version": "franka_single_v3"},
+            )
+            old_cache = os.environ.get("FRANKA_GUI_RECORD_CACHE_ROOT")
+            os.environ["FRANKA_GUI_RECORD_CACHE_ROOT"] = str(cache_root)
+            events = []
+            try:
+                validation = async_episode_saver.EpisodeValidationResult(
+                    "WARN", ["joint_delta_p95: p95 exceeds warning threshold"]
+                )
+                with mock.patch.object(
+                    async_episode_saver,
+                    "_validate_staged_episode",
+                    return_value=validation,
+                ):
+                    saved, _ = async_episode_saver._save_episode(
+                        request,
+                        validation_started=lambda *args: events.append(("start", args)),
+                        validation_finished=lambda *args: events.append(("finish", args)),
+                    )
+                self.assertTrue(saved.is_dir())
+                self.assertEqual(events[1][1][2], "WARN")
+                self.assertIn("joint_delta_p95", events[1][1][3][0])
             finally:
                 if old_cache is None:
                     os.environ.pop("FRANKA_GUI_RECORD_CACHE_ROOT", None)

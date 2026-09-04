@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import json
 import pickle
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,12 @@ try:
 except ImportError as exc:
     raise unittest.SkipTest("pytest is not installed") from exc
 
-from validate.validate_task import parse_args, validate_episode
+from validate.validate_task import (
+    ValidationCancelled,
+    parse_args,
+    read_video_info,
+    validate_episode,
+)
 
 
 WIDTH = 32
@@ -100,6 +106,30 @@ def _write_metadata(episode_dir: Path, metadata: dict[str, Any]) -> None:
     )
 
 
+def test_video_validation_can_be_cancelled_between_decoded_frames(
+    monkeypatch,
+) -> None:
+    cancelled = threading.Event()
+
+    class FakeCapture:
+        def isOpened(self):
+            return True
+
+        def get(self, _key):
+            return 30.0
+
+        def read(self):
+            cancelled.set()
+            return True, np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(cv2, "VideoCapture", lambda _path: FakeCapture())
+    with pytest.raises(ValidationCancelled):
+        read_video_info(Path("cancel.mp4"), cancel_event=cancelled)
+
+
 def _validator_args() -> Any:
     args = parse_args(["task"])
     args.min_cameras = 1
@@ -119,6 +149,47 @@ def test_valid_v3_episode_passes_strict_contract_and_full_decode(tmp_path: Path)
     assert report.status == "PASS", [(issue.code, issue.message) for issue in report.issues]
     assert report.videos["middle"].frame_count == FRAME_COUNT
     assert (report.videos["middle"].width, report.videos["middle"].height) == (WIDTH, HEIGHT)
+
+
+def _make_umi_left_episode(
+    episode_dir: Path,
+    metadata: dict[str, Any],
+    *,
+    include_profile: bool,
+) -> None:
+    (episode_dir / "middle.mp4").rename(episode_dir / "left_wrist.mp4")
+    middle = metadata["image_storage"]["cameras"].pop("middle")
+    middle["filename"] = "left_wrist.mp4"
+    metadata["image_storage"]["cameras"]["left_wrist"] = middle
+    metadata["camera_names"] = ["left_wrist"]
+    metadata["arm_side"] = "left"
+    if include_profile:
+        metadata["camera_profile"] = "umi-left"
+    _write_metadata(episode_dir, metadata)
+
+
+def test_umi_left_profile_allows_one_declared_v4l2_camera(tmp_path: Path) -> None:
+    episode_dir, _, metadata = _write_v3_episode(tmp_path)
+    _make_umi_left_episode(episode_dir, metadata, include_profile=True)
+
+    report = validate_episode(episode_dir, parse_args(["task"]))
+
+    assert report.status == "PASS", [(issue.code, issue.message) for issue in report.issues]
+    assert set(report.videos) == {"left_wrist"}
+
+
+def test_one_camera_without_umi_profile_keeps_existing_strict_failure(
+    tmp_path: Path,
+) -> None:
+    episode_dir, _, metadata = _write_v3_episode(tmp_path)
+    _make_umi_left_episode(episode_dir, metadata, include_profile=False)
+
+    report = validate_episode(episode_dir, parse_args(["task"]))
+
+    assert report.status == "FAIL"
+    codes = _issue_codes(report)
+    assert "too_few_cameras" in codes
+    assert "strict_camera_set_mismatch" in codes
 
 
 @pytest.mark.parametrize(

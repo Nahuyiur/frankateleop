@@ -23,7 +23,7 @@ fi
 echo ">>> 启动Gripper 客户端 ..."
 
 resolve_teleop_port() {
-    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBJTKP2-if00-port0"
+    local default_port="/dev/serial/by-id/usb-FTDI_USB__-__Serial_Converter_FTBZIB2R-if00-port0"
     local teleop_port="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-${TELEOP_PORT:-$default_port}}}"
 
     if [[ ! -e "$teleop_port" ]]; then
@@ -36,7 +36,8 @@ resolve_teleop_port() {
     printf '%s\n' "$teleop_port"
 }
 
+
 TELEOP_PORT_RESOLVED="$(resolve_teleop_port)"
 echo ">>> 使用同构臂串口：$TELEOP_PORT_RESOLVED"
-python3 "$SCRIPT_PATH" --agent=teleop --teleop_port="$TELEOP_PORT_RESOLVED" "$@"
+python3 "$SCRIPT_PATH" --agent=teleop --control_port=6001 --robot_type=fr3_left --teleop_port="$TELEOP_PORT_RESOLVED" "$@"
 #如果要启用采集数据，需要在后面增加“--use_save_interface”

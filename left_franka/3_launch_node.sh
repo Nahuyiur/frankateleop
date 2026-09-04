@@ -24,15 +24,32 @@ echo ">>> 激活 conda 环境 polymetis ..."
 source_conda
 conda activate polymetis || { echo "❌ 激活失败，请确认 polymetis 环境存在"; exit 1; }
 
-echo ">>> 使用仓库根目录 teleop ..."
-POLY_ROOT="$REPO_ROOT/teleop"
+POLYMETIS_ROOT="$REPO_ROOT/polymetis"
+POLYMETIS_TORCH_ISOLATION="$POLYMETIS_ROOT/polymetis/build/torch_isolation"
+POLYMETIS_PINOCCHIO_ISOLATION="$POLYMETIS_TORCH_ISOLATION/pinocchio_isolation"
+POLYMETIS_TORCH_LIB="$(python -c 'from pathlib import Path; import torch; print(Path(torch.__file__).resolve().parent / "lib")')"
 
-if [[ -z "$POLY_ROOT" ]]; then
+for required_dir in \
+    "$POLYMETIS_TORCH_ISOLATION" \
+    "$POLYMETIS_PINOCCHIO_ISOLATION" \
+    "$POLYMETIS_TORCH_LIB"; do
+    if [[ ! -d "$required_dir" ]]; then
+        echo "❌ Polymetis 运行库目录不存在：$required_dir" >&2
+        exit 1
+    fi
+done
+
+export LD_LIBRARY_PATH="$POLYMETIS_PINOCCHIO_ISOLATION:$POLYMETIS_TORCH_ISOLATION:$POLYMETIS_TORCH_LIB:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+echo ">>> 使用仓库根目录 teleop ..."
+TELEOP_ROOT="$REPO_ROOT/teleop"
+
+if [[ ! -d "$TELEOP_ROOT" ]]; then
     echo "❌ 当前目录下未找到 teleop 文件夹"
     exit 1
 fi
 
-SCRIPT_PATH="$POLY_ROOT/experiments/launch_nodes.py"
+SCRIPT_PATH="$TELEOP_ROOT/experiments/launch_nodes.py"
 if [[ ! -f "$SCRIPT_PATH" ]]; then
     echo "❌ 未找到脚本：$SCRIPT_PATH"
     exit 1
@@ -40,9 +57,21 @@ fi
 
 echo ">>> 启动Robot Node ..."
 export FRANKA_ROBOT_NAME="left"
+ROBOT_SERVER_PORT="${LEFT_ROBOT_SERVER_PORT:-${FRANKA_ROBOT_SERVER_PORT:-50052}}"
+GRIPPER_SERVER_PORT="${LEFT_GRIPPER_SERVER_PORT:-${FRANKA_GRIPPER_SERVER_PORT:-50054}}"
+TELEOP_PORT="${LEFT_TELEOP_PORT:-${FRANKA_TELEOP_PORT:-6002}}"
 echo ">>> robot side=$FRANKA_ROBOT_NAME"
+echo ">>> robot server port=$ROBOT_SERVER_PORT"
+echo ">>> gripper server port=$GRIPPER_SERVER_PORT"
+echo ">>> Robot Node port=$TELEOP_PORT"
 echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
 echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
 echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints.json}"
-python3 "$SCRIPT_PATH" --robot=fr3_left --tele_port=6002 --robot_port=50052 --gripper_port=50054 --robot_ip=127.0.0.1 "$@"
+python3 "$SCRIPT_PATH" \
+    --robot=fr3_left \
+    --tele_port="$TELEOP_PORT" \
+    --robot_port="$ROBOT_SERVER_PORT" \
+    --gripper_port="$GRIPPER_SERVER_PORT" \
+    --robot_ip=127.0.0.1 \
+    "$@"
 #robot_ip是直接连接机器人的主机的IP，如果是本机直连机器人，可以用127.0.0.1代替
