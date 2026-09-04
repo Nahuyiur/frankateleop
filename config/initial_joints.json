@@ -1,7 +1,7 @@
 {
   "schema_version": "initial_joints_v1",
   "right": {
-    "name": "yuhan_gello_bimanual_default_right",
+    "name": "bimanual custom setup v0.1",
     "joints": [
       1.730099081993103,
       0.9365692734718323,
@@ -18,7 +18,7 @@
   "updated_at_unix": 1788503541.0667782,
   "updated_at": "2026-09-04T14:32:21",
   "left": {
-    "name": "yuhan_gello_bimanual_default_left",
+    "name": "bimanual custom setup v0.1",
     "joints": [
       1.4553425312042236,
       -0.8559615015983582,
