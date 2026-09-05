@@ -14,7 +14,8 @@ robot_client:
     hz: ${hz}
     robot_model_cfg: ${robot_model}
   executable_cfg:
-    robot_ip: "172.16.0.2"
+    # FR3 B / right Desk on the fixed switch topology.
+    robot_ip: ${env:FRANKA_RIGHT_ROBOT_IP,172.16.0.4}
     control_ip: ${ip}
     control_port: ${port}
     readonly: false

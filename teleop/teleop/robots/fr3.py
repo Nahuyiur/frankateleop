@@ -1,10 +1,15 @@
 import os
 import time
 import torch
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict
 from typing import Optional
 import numpy as np
 from teleop.robots.robot import Robot
+
+LOGGER = logging.getLogger("franka_fr3_robot")
 
 MAX_OPEN = 0.09
 GRIPPER_SPEED = 0.1
@@ -78,7 +83,19 @@ class fr3Robot(Robot):
             )
         self._last_ee_hold_log_time = 0.0
         self._last_ee_hold_reason = ""
-        self._start_control_mode(control_mode)
+        # PICO starts in preview mode and may not issue an EEF command for
+        # several seconds. Starting Polymetis' Cartesian policy here would
+        # leave libfranka without a desired-pose update and trigger its 1 s
+        # communication watchdog before the operator ever squeezes. GELLO
+        # keeps the historical eager behavior; PICO opts into lazy startup.
+        self._lazy_cartesian_start = (
+            control_mode == "ee"
+            and os.environ.get("FRANKA_LAZY_EE_START", "0").strip().lower()
+            in ("1", "true", "yes", "on")
+        )
+        self._cartesian_policy_started = False
+        if not self._lazy_cartesian_start:
+            self._start_control_mode(control_mode)
         self._debug_gripper = os.environ.get("TELEOP_DEBUG_GRIPPER", "").lower() in (
             "1",
             "true",
@@ -86,6 +103,16 @@ class fr3Robot(Robot):
             "on",
         )
         self._last_gripper_debug_time = 0.0
+        # The gripper SDK call can take hundreds of milliseconds while the
+        # Cartesian command itself is already accepted by Polymetis.  Keep it
+        # off the single ZMQ request thread and collapse queued updates to the
+        # latest target so it can never build a latency backlog.
+        self._gripper_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="fr3-gripper"
+        )
+        self._gripper_lock = threading.Lock()
+        self._pending_gripper_command = None
+        self._gripper_worker_running = False
         if open_gripper_on_init:
             self.gripper.goto(
                 width=self._max_gripper_width,
@@ -108,6 +135,7 @@ class fr3Robot(Robot):
             self.robot.start_joint_impedance()
         elif control_mode == "ee":
             self.robot.start_cartesian_impedance()
+            self._cartesian_policy_started = True
         else:
             raise ValueError(f"Unsupported fr3 control_mode: {control_mode}")
 
@@ -264,23 +292,16 @@ class fr3Robot(Robot):
             return soft_limit
 
         if self.robot.is_running_policy():
+            self._cartesian_policy_started = True
             return None
 
         # The low-level client may stop a custom policy after automatic error
-        # recovery. Restart only from a joint-safe state and require the caller
-        # to release/re-anchor before sending any new displacement target.
+        # recovery. Restart only from a joint-safe state. Do not wait up to two
+        # seconds for is_running_policy(): the 1 kHz Franka watchdog can expire
+        # during that poll and the ZMQ caller then reports a false timeout.
         self.robot.start_cartesian_impedance()
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            if self.robot.is_running_policy():
-                result = {
-                    "status": "hold",
-                    "reason": "cartesian_controller_restarted",
-                }
-                self._log_ee_hold(result)
-                return result
-            time.sleep(0.02)
-        raise RuntimeError("Cartesian impedance controller did not restart")
+        self._cartesian_policy_started = True
+        return None
 
     def num_dofs(self) -> int:
         """Get the number of joints of the robot.
@@ -442,16 +463,56 @@ class fr3Robot(Robot):
         if update_gripper:
             width = float(np.clip(gripper_width, 0.0, self._max_gripper_width))
             closedness = 1.0 - width / self._max_gripper_width
-            self.gripper.goto(
-                width=width,
-                speed=gripper_speed,
-                force=gripper_force,
-            )
             self._remember_gripper_command(
                 closedness,
                 width,
                 "command_ee_pose",
             )
+            self._queue_gripper_command(width, gripper_speed, gripper_force)
+
+    def _queue_gripper_command(
+        self, width: float, speed: float, force: float
+    ) -> None:
+        """Queue only the newest gripper target and return immediately.
+
+        ZMQ command latency must be governed by the Cartesian update, not by a
+        blocking Robotiq/DAS-Finger action.  A single worker preserves command
+        ordering while replacing pending intermediate targets with the latest
+        controller value.
+        """
+        executor = getattr(self, "_gripper_executor", None)
+        if executor is None:
+            # Legacy unit-test adapters construct fr3Robot with object.__new__.
+            executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="fr3-gripper")
+            self._gripper_executor = executor
+            self._gripper_lock = threading.Lock()
+            self._pending_gripper_command = None
+            self._gripper_worker_running = False
+        with self._gripper_lock:
+            self._pending_gripper_command = (float(width), float(speed), float(force))
+            if self._gripper_worker_running:
+                return
+            self._gripper_worker_running = True
+        executor.submit(self._drain_gripper_commands)
+
+    def _drain_gripper_commands(self) -> None:
+        while True:
+            with self._gripper_lock:
+                command = self._pending_gripper_command
+                self._pending_gripper_command = None
+                if command is None:
+                    self._gripper_worker_running = False
+                    return
+            width, speed, force = command
+            try:
+                self.gripper.goto(width=width, speed=speed, force=force)
+            except Exception as exc:
+                LOGGER.warning(
+                    "asynchronous gripper command failed width=%.4f force=%.1f: %s",
+                    width,
+                    force,
+                    exc,
+                )
 
     def _debug_gripper_command(
         self,
@@ -509,7 +570,23 @@ class fr3Robot(Robot):
             max_width = MAX_OPEN
         return max_width
 
-    def get_observations(self) -> Dict[str, np.ndarray]:
+    def get_observations(self, fast: bool = False) -> Dict[str, np.ndarray]:
+        if fast:
+            # Teleop anchoring/tracking only needs EEF pose and gripper width.
+            # Avoid five synchronous gRPC calls on the command server; the
+            # full recorder observation contract remains the default below.
+            ee_pos, ee_quat = self.robot.get_ee_pose()
+            ee_pos = ee_pos.detach().cpu().numpy()
+            ee_quat = ee_quat.detach().cpu().numpy()
+            from scipy.spatial.transform import Rotation
+            ee_euler = Rotation.from_quat(ee_quat).as_euler("xyz", degrees=False)
+            return {
+                "ee_pos_quat": np.concatenate([ee_pos, ee_quat]),
+                "ee_pose_euler": np.concatenate([ee_pos, ee_euler]),
+                "gripper_width": np.array(
+                    [self._last_gripper_target_width], dtype=np.float32
+                ),
+            }
         joints = self.get_joint_state()
         joint_velocities = (
             self.robot.get_joint_velocities()

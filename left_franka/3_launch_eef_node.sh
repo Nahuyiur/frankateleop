@@ -25,6 +25,9 @@ fi
 # node port, while script 4 uses that name for the serial device.  Scope the
 # numeric value to this child process and expose a clearer EEF-specific name.
 export LEFT_TELEOP_PORT="$NODE_PORT"
+# Do not start the Cartesian policy while Pico is still preview-only.  The
+# first anchored EEF command starts it and immediately seeds the desired pose.
+export FRANKA_LAZY_EE_START="${FRANKA_LAZY_EE_START:-1}"
 
 exec bash "$SCRIPT_DIR/3_launch_node.sh" \
     --control-mode ee \

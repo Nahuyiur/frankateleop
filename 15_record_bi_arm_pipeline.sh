@@ -2,7 +2,17 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RIGHT_HOST="${BI_ARM_RIGHT_HOST:-192.168.100.86}"
+NETWORK_CONFIG="${BI_ARM_NETWORK_CONFIG:-$REPO_ROOT/config/robot_network.env}"
+if [[ -f "$NETWORK_CONFIG" ]]; then
+    # This is a local, operator-maintained assignment file containing only
+    # shell variable declarations. Exporting it lets child launchers use the
+    # same fixed topology without probing the switch.
+    set -a
+    # shellcheck source=/dev/null
+    source "$NETWORK_CONFIG"
+    set +a
+fi
+RIGHT_HOST="${BI_ARM_RIGHT_HOST:-${PICO_RIGHT_HOST_IP:-172.16.0.3}}"
 RIGHT_SSH="${BI_ARM_RIGHT_SSH:-pnp@$RIGHT_HOST}"
 if [[ "$RIGHT_SSH" != *@* ]]; then
     RIGHT_SSH="pnp@$RIGHT_SSH"
@@ -17,9 +27,16 @@ LEFT_ROBOT_PORT="${BI_ARM_LEFT_ROBOT_PORT:-50052}"
 LEFT_GRIPPER_PORT="${BI_ARM_LEFT_GRIPPER_PORT:-50054}"
 RIGHT_ROBOT_PORT="${BI_ARM_RIGHT_ROBOT_PORT:-50051}"
 RIGHT_GRIPPER_PORT="${BI_ARM_RIGHT_GRIPPER_PORT:-50053}"
-RIGHT_ROBOT_IP="${BI_ARM_RIGHT_ROBOT_IP:-172.16.0.2}"
-RIGHT_FCI_PORT="${BI_ARM_RIGHT_FCI_PORT:-1337}"
-REQUIRE_RIGHT_FCI_READY="${BI_ARM_REQUIRE_RIGHT_FCI_READY:-1}"
+LEFT_ROBOT_IP="${BI_ARM_LEFT_ROBOT_IP:-${FRANKA_LEFT_ROBOT_IP:-172.16.0.2}}"
+RIGHT_ROBOT_IP="${BI_ARM_RIGHT_ROBOT_IP:-${FRANKA_RIGHT_ROBOT_IP:-172.16.0.4}}"
+LEFT_FCI_PORT="${BI_ARM_LEFT_FCI_PORT:-${FRANKA_FCI_PORT:-1337}}"
+RIGHT_FCI_PORT="${BI_ARM_RIGHT_FCI_PORT:-${FRANKA_FCI_PORT:-1337}}"
+DESK_PORT="${BI_ARM_DESK_PORT:-${FRANKA_DESK_PORT:-443}}"
+# Desk/FCI state is operator-confirmed before a run.  Keep the probes
+# available for diagnosis, but do not make a known-good FCI session block the
+# realtime startup or contend for its Desk control token.
+REQUIRE_RIGHT_FCI_READY="${BI_ARM_REQUIRE_RIGHT_FCI_READY:-0}"
+REQUIRE_LEFT_FCI_READY="${BI_ARM_REQUIRE_LEFT_FCI_READY:-0}"
 READY_TIMEOUT="${BI_ARM_READY_TIMEOUT:-120}"
 SSH_COMMAND_RETRIES="${BI_ARM_SSH_COMMAND_RETRIES:-4}"
 SSH_RETRY_DELAY="${BI_ARM_SSH_RETRY_DELAY:-2}"
@@ -100,8 +117,15 @@ Recording keys:
   k=keyframe, q=save and quit
 
 Environment:
-  BI_ARM_RIGHT_HOST=192.168.100.86
-  BI_ARM_RIGHT_SSH=pnp@192.168.100.86
+  BI_ARM_RIGHT_HOST=172.16.0.3
+  BI_ARM_NETWORK_CONFIG=$REPO_ROOT/config/robot_network.env
+  BI_ARM_LEFT_ROBOT_IP=172.16.0.2
+  BI_ARM_RIGHT_ROBOT_IP=172.16.0.4
+  BI_ARM_LEFT_FCI_PORT=1337
+  BI_ARM_RIGHT_FCI_PORT=1337
+  BI_ARM_REQUIRE_LEFT_FCI_READY=0  # set 1 for a read-only preflight
+  BI_ARM_REQUIRE_RIGHT_FCI_READY=0 # set 1 for a read-only preflight
+  BI_ARM_RIGHT_SSH=pnp@172.16.0.3
   BI_ARM_RIGHT_REPO=/home/pnp/frankateleop
   BI_ARM_RIGHT_LOCAL_ZMQ_PORT=16001
   BI_ARM_RIGHT_RECORD_ZMQ_HOST=192.168.100.86
@@ -135,8 +159,10 @@ Environment:
   BI_ARM_RIGHT_ROBOTIQ_COMPORT=
 
 This script starts local left_franka/1-4, starts remote right_franka/1-4
-through SSH, opens an SSH tunnel from local 16001 to remote 6001, then runs
-the dual-arm recorder on this host. With BI_ARM_RIGHT_ONLY=1 and
+through SSH for process management, opens an SSH tunnel from local 16001 to
+remote 6001, then runs the dual-arm recorder on this host. Robot control and
+FCI packets use the fixed Ethernet addresses above; SSH is never in the FCI
+data path. With BI_ARM_RIGHT_ONLY=1 and
 BI_ARM_STACK_ONLY=1, it starts only the remote right_franka/1-4 stack plus the
 right-arm SSH tunnel for the GUI right-arm single recorder.
 EOF
@@ -257,7 +283,8 @@ sync_remote_right_scripts() {
         teleop/teleop/robots/dynamixel.py \
         teleop/teleop/robots/fr3.py \
         teleop/teleop/zmq_core/robot_node.py \
-        umi_genrobot/bridge/das_finger_polymetis_server.py
+        umi_genrobot/bridge/das_finger_polymetis_server.py \
+        config/robot_network.env
     )
     if [[ -f "$INITIAL_JOINTS_FILE" && "$INITIAL_JOINTS_FILE" == "$REPO_ROOT"/* ]]; then
         tar_items+=("${INITIAL_JOINTS_FILE#"$REPO_ROOT"/}")
@@ -714,13 +741,50 @@ EOF
     fi
 }
 
+valid_ipv4_literal() {
+    local value="$1"
+    [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    local octet
+    IFS=. read -r -a octets <<< "$value"
+    for octet in "${octets[@]}"; do
+        ((octet >= 0 && octet <= 255)) || return 1
+    done
+}
+
+check_robot_ip_assignment() {
+    valid_ipv4_literal "$LEFT_ROBOT_IP" || abort "Invalid left FR3/Desk IPv4 address: $LEFT_ROBOT_IP"
+    valid_ipv4_literal "$RIGHT_ROBOT_IP" || abort "Invalid right FR3/Desk IPv4 address: $RIGHT_ROBOT_IP"
+    if [[ "$LEFT_ROBOT_IP" == "$RIGHT_ROBOT_IP" && "${BI_ARM_ALLOW_DUPLICATE_ROBOT_IP:-0}" != "1" ]]; then
+        abort "Both arms resolve to the same FR3/Desk address ($LEFT_ROBOT_IP). Configure left=172.16.0.2 and right=172.16.0.4 in each robot Desk before starting; a duplicate address makes both Desk pages share the same control token. Set BI_ARM_ALLOW_DUPLICATE_ROBOT_IP=1 only for diagnostics."
+    fi
+    log "Fixed robot network: left FR3/Desk=$LEFT_ROBOT_IP:$LEFT_FCI_PORT, right FR3/Desk=$RIGHT_ROBOT_IP:$RIGHT_FCI_PORT; right host PC=$RIGHT_HOST"
+}
+
+check_local_left_fci_ready() {
+    if [[ "$REQUIRE_LEFT_FCI_READY" != "1" || "$RIGHT_ONLY" == "1" ]]; then
+        return 0
+    fi
+    log "Checking left robot FCI: $LEFT_ROBOT_IP:$LEFT_FCI_PORT from Host PC A"
+    local fci_rc=0 desk_rc=0
+    timeout 3 bash -c "</dev/tcp/$LEFT_ROBOT_IP/$LEFT_FCI_PORT" >/dev/null 2>&1 || fci_rc=$?
+    if ((fci_rc == 0)); then
+        log "Left robot FCI is ready."
+        return 0
+    fi
+    timeout 3 bash -c "</dev/tcp/$LEFT_ROBOT_IP/$DESK_PORT" >/dev/null 2>&1 || desk_rc=$?
+    if ((desk_rc == 0)); then
+        abort "Left robot is reachable at https://$LEFT_ROBOT_IP, but FCI is not active on port $LEFT_FCI_PORT. In that robot's Desk, release the user=franka control token, select Execution mode, activate FCI, and leave only one Desk session requesting control."
+    fi
+    abort "Left FR3/Desk is not reachable at $LEFT_ROBOT_IP from Host PC A. Check the fixed Ethernet address and cable before starting."
+}
+
 check_remote_right_fci_ready() {
     if [[ "$REQUIRE_RIGHT_FCI_READY" != "1" ]]; then
         log "WARNING: right FCI preflight is disabled by BI_ARM_REQUIRE_RIGHT_FCI_READY=$REQUIRE_RIGHT_FCI_READY."
         return 0
     fi
 
-    log "Checking right robot FCI: $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT via $RIGHT_SSH"
+    log "Checking right robot FCI: $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT from Host PC B ($RIGHT_HOST)"
     local probe rc
     local cmd
     cmd=$(cat <<EOF
@@ -731,7 +795,7 @@ if [[ \$fci_rc -eq 0 ]]; then
     echo FCI_READY
     exit 0
 fi
-timeout 3 bash -c '</dev/tcp/$RIGHT_ROBOT_IP/443' >/dev/null 2>&1
+    timeout 3 bash -c '</dev/tcp/$RIGHT_ROBOT_IP/$DESK_PORT' >/dev/null 2>&1
 desk_rc=\$?
 if [[ \$desk_rc -eq 0 ]]; then
     echo FCI_INACTIVE
@@ -750,13 +814,13 @@ EOF
 
     case "$probe" in
         *FCI_INACTIVE*)
-            abort "Right robot is reachable at https://$RIGHT_ROBOT_IP, but FCI is not active on port $RIGHT_FCI_PORT. On the right robot Desk: release the brakes, select Execution mode, choose Activate FCI, keep the FCI window open, then start the dual-arm stack again."
+            abort "Right robot is reachable at https://$RIGHT_ROBOT_IP, but FCI is not active on port $RIGHT_FCI_PORT. In that robot's Desk, release the user=franka control token, select Execution mode, activate FCI, and leave only one Desk session requesting control."
             ;;
         *ROBOT_UNREACHABLE*)
-            abort "Right robot control cabinet is not reachable from $RIGHT_SSH at $RIGHT_ROBOT_IP. Check the right robot power and the right-host-to-control-cabinet Ethernet connection before retrying."
+            abort "Right FR3/Desk is not reachable from Host PC B ($RIGHT_HOST) at $RIGHT_ROBOT_IP. Check that Host PC B is 172.16.0.3/24 and the right robot Desk is 172.16.0.4/24 before retrying."
             ;;
         *)
-            abort "Unable to verify right robot FCI readiness (exit_code=$rc). Check SSH access to $RIGHT_SSH and the right robot at $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT."
+            abort "Unable to verify right robot FCI readiness (exit_code=$rc). Check Host PC B at $RIGHT_HOST and the right robot at $RIGHT_ROBOT_IP:$RIGHT_FCI_PORT."
             ;;
     esac
 }
@@ -986,10 +1050,17 @@ start_local_script() {
         export FRANKA_LEFT_INITIAL_JOINTS="$LEFT_INITIAL_JOINTS"
         export FRANKA_RIGHT_INITIAL_JOINTS="$RIGHT_INITIAL_JOINTS"
         export FRANKA_SINGLE_INITIAL_JOINTS="$SINGLE_INITIAL_JOINTS"
+        export FRANKA_ROBOT_IP="$LEFT_ROBOT_IP"
+        export FRANKA_LEFT_ROBOT_IP="$LEFT_ROBOT_IP"
+        export FRANKA_RIGHT_ROBOT_IP="$RIGHT_ROBOT_IP"
+        export FRANKA_DESK_PORT="$DESK_PORT"
+        export FRANKA_FCI_PORT="$LEFT_FCI_PORT"
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
         export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
         export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
-        exec bash "$script"
+        # Keep the high-level launcher and robot wrappers at normal priority;
+        # the Polymetis/Franka RT thread keeps its own FIFO scheduling.
+        exec nice -n 0 bash "$script"
     ) >"$logfile" 2>&1 &
 
     local pid="$!"
@@ -1031,10 +1102,25 @@ export FRANKA_INITIAL_JOINTS=$(q "$INITIAL_JOINTS")
 export FRANKA_LEFT_INITIAL_JOINTS=$(q "$LEFT_INITIAL_JOINTS")
 export FRANKA_RIGHT_INITIAL_JOINTS=$(q "$RIGHT_INITIAL_JOINTS")
 export FRANKA_SINGLE_INITIAL_JOINTS=$(q "$SINGLE_INITIAL_JOINTS")
+export FRANKA_ROBOT_IP=$(q "$RIGHT_ROBOT_IP")
+export FRANKA_LEFT_ROBOT_IP=$(q "$LEFT_ROBOT_IP")
+export FRANKA_RIGHT_ROBOT_IP=$(q "$RIGHT_ROBOT_IP")
+export FRANKA_DESK_PORT=$(q "$DESK_PORT")
+export FRANKA_FCI_PORT=$(q "$RIGHT_FCI_PORT")
 export RIGHT_TELEOP_PORT=$(q "$RIGHT_TELEOP_PORT_OVERRIDE")
 export RIGHT_ROBOTIQ_COMPORT=$(q "$RIGHT_ROBOTIQ_COMPORT_OVERRIDE")
 export RIGHT_GRIPPER_SERVER_PORT=$(q "$RIGHT_GRIPPER_PORT")
-nohup setsid bash $(q "$script_name") > $(q "$logfile") 2>&1 < /dev/null &
+if sudo -n true >/dev/null 2>&1; then
+    nohup setsid bash -lc $(q "sudo -n renice -n 0 -p \$\$ >/dev/null 2>&1; exec bash $(q "$script_name")") > $(q "$logfile") 2>&1 < /dev/null &
+elif [[ -r $(q "$REMOTE_SUDO_PASSWORD_FILE") ]]; then
+    # Let root renice this existing pnp shell, then exec the robot script in
+    # place. Reading the credential inside the shell avoids nohup replacing
+    # sudo's stdin with /dev/null.
+    nohup setsid bash -lc $(q "IFS= read -r sudo_password < $(q "$REMOTE_SUDO_PASSWORD_FILE"); printf '%s\\n' \"\$sudo_password\" | sudo -S -p '' renice -n 0 -p \$\$ >/dev/null 2>&1; unset sudo_password; exec bash $(q "$script_name")") \
+        > $(q "$logfile") 2>&1 < /dev/null &
+else
+    nohup setsid bash $(q "$script_name") > $(q "$logfile") 2>&1 < /dev/null &
+fi
 new_pid=\$!
 printf '%s\n' "\$new_pid" > "\${pid_file}.tmp.\$\$"
 mv -f "\${pid_file}.tmp.\$\$" "\$pid_file"
@@ -1215,30 +1301,33 @@ main() {
     setup_ssh_askpass
     provision_local_sudo_file
     prepare_sudo
+    check_robot_ip_assignment
     prepare_remote
+    check_local_left_fci_ready
     check_remote_right_fci_ready
     sync_remote_right_scripts
     check_remote_right_runtime_prerequisites
     cleanup_stale_ports
 
     if [[ "$RIGHT_ONLY" != "1" ]]; then
-        kill_port_local "left robot server" "$LEFT_ROBOT_PORT"
-        start_local_script "left 1_launch_robot" "$REPO_ROOT/left_franka/1_launch_robot.sh" check_robot_grpc_ready_local "$LEFT_ROBOT_PORT"
-    fi
-    kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
-    start_remote_script "right 1_launch_robot" "1_launch_robot.sh" check_robot_grpc_ready_remote "$RIGHT_ROBOT_PORT"
-
-    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        # The EEF node constructs its GripperInterface during initialization,
+        # so start the gripper endpoint first.  Then the robot server can be
+        # attached by the EEF client immediately after its gRPC port opens;
+        # this avoids an unattended FCI loop and communication_constraints_violation.
         kill_port_local "left gripper server" "$LEFT_GRIPPER_PORT"
         start_local_script "left 2_launch_gripper" "$REPO_ROOT/left_franka/2_launch_gripper.sh" check_gripper_grpc_ready_local "$LEFT_GRIPPER_PORT"
-    fi
-    kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
-    start_remote_script "right 2_launch_gripper" "2_launch_gripper.sh" check_gripper_grpc_ready_remote "$RIGHT_GRIPPER_PORT"
-
-    if [[ "$RIGHT_ONLY" != "1" ]]; then
+        kill_port_local "left robot server" "$LEFT_ROBOT_PORT"
+        start_local_script "left 1_launch_robot" "$REPO_ROOT/left_franka/1_launch_robot.sh" check_robot_grpc_ready_local "$LEFT_ROBOT_PORT"
         kill_port_local "left ZMQ node" "$LEFT_ZMQ_PORT"
         start_local_script "left 3_launch_node" "$REPO_ROOT/left_franka/3_launch_node.sh" check_robot_zmq_ready_local "$LEFT_ZMQ_PORT"
     fi
+    # Apply the same order on the right host so its FCI loop is never left
+    # without a high-level ControlUpdate client during startup.
+    kill_port_remote "right gripper server" "$RIGHT_GRIPPER_PORT"
+    start_remote_script "right 2_launch_gripper" "2_launch_gripper.sh" check_gripper_grpc_ready_remote "$RIGHT_GRIPPER_PORT"
+    kill_port_remote "right robot server" "$RIGHT_ROBOT_PORT"
+    start_remote_script "right 1_launch_robot" "1_launch_robot.sh" check_robot_grpc_ready_remote "$RIGHT_ROBOT_PORT"
+
     kill_port_remote "right ZMQ node" "$RIGHT_REMOTE_ZMQ_PORT"
     start_remote_script "right 3_launch_node" "3_launch_node.sh" check_robot_zmq_ready_remote "$RIGHT_REMOTE_ZMQ_PORT"
 

@@ -14,7 +14,7 @@ right_robot_client:
     hz: ${hz}
     robot_model_cfg: ${robot_model}
   executable_cfg:
-    robot_ip: "172.16.0.2"
+    robot_ip: ${env:FRANKA_RIGHT_ROBOT_IP,172.16.0.4}
     control_ip: ${right_ip}
     control_port: ${right_port}
     readonly: false
@@ -102,7 +102,7 @@ left_robot_client:
     hz: ${hz}
     robot_model_cfg: ${robot_model}
   executable_cfg:
-    robot_ip: "172.16.0.3"
+    robot_ip: ${env:FRANKA_LEFT_ROBOT_IP,172.16.0.2}
     control_ip: ${left_ip}
     control_port: ${left_port}
     readonly: false

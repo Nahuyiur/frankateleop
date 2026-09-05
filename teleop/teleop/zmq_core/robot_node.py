@@ -1,5 +1,7 @@
 import pickle
+import logging
 import threading
+import time
 from typing import Any, Dict
 
 import numpy as np
@@ -8,6 +10,7 @@ import zmq
 from teleop.robots.robot import Robot
 
 DEFAULT_ROBOT_PORT = 6000
+LOGGER = logging.getLogger("franka_zmq_node")
 
 
 class ZMQServerRobot:
@@ -20,10 +23,14 @@ class ZMQServerRobot:
         self._robot = robot
         self._context = zmq.Context()
         self._socket = self._context.socket(zmq.REP)
+        self._socket.setsockopt(zmq.LINGER, 0)
+        if hasattr(zmq, "TCP_NODELAY"):
+            self._socket.setsockopt(zmq.TCP_NODELAY, 1)
         addr = f"tcp://{host}:{port}"
         debug_message = f"Robot Sever Binding to {addr}, Robot: {robot}"
         print(debug_message)
         self._timout_message = f"Timeout in Robot Server, Robot: {robot}"
+        self._last_idle_log = 0.0
         self._socket.bind(addr)
         self._stop_event = threading.Event()
 
@@ -63,18 +70,29 @@ class ZMQServerRobot:
                         else:
                             result = self._robot.move_to_joint_positions(**args)
                     elif method == "get_observations":
-                        result = self._robot.get_observations()
+                        try:
+                            result = self._robot.get_observations(**args)
+                        except TypeError as exc:
+                            # Older GELLO/robot adapters do not yet accept the
+                            # fast observation flag; fall back to their full
+                            # observation contract without dropping the ZMQ
+                            # request.
+                            if "fast" not in str(exc) or not args.get("fast"):
+                                raise
+                            result = self._robot.get_observations()
                     else:
                         result = {"error": f"Invalid method: {method}"}
-                        print(result)
+                        LOGGER.error("invalid request result=%s", result)
                 except Exception as exc:
                     result = {"error": f"{type(exc).__name__}: {exc}"}
-                    print(result)
+                    LOGGER.warning("robot request failed method=%s error=%s", method, exc)
 
                 self._socket.send(pickle.dumps(result))
             except zmq.Again:
-                print(self._timout_message)
-                # Timeout occurred, check if the stop event is set
+                now = time.monotonic()
+                if now - self._last_idle_log >= 5.0:
+                    LOGGER.debug("%s (idle; no client request)", self._timout_message)
+                    self._last_idle_log = now
 
     def stop(self) -> None:
         """Signal the server to stop serving."""

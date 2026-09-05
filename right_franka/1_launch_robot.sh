@@ -3,6 +3,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Fixed switch topology: Host PC B (172.16.0.3) -> FR3 B (172.16.0.4).
+# The value is overridable for maintenance, but never discovered by scanning.
+FRANKA_RIGHT_ROBOT_IP="${FRANKA_RIGHT_ROBOT_IP:-${FRANKA_ROBOT_IP:-172.16.0.4}}"
+export FRANKA_RIGHT_ROBOT_IP
 
 source_conda() {
     if command -v conda >/dev/null 2>&1; then
@@ -54,7 +58,10 @@ validate_sudo_password_file() {
 }
 
 install_sudo_wrapper() {
-    if command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+    # Keep the explicit credential wrapper active even when another process
+    # has left a cached sudo timestamp.  launch_robot.py invokes sudo directly
+    # and otherwise may hit a non-interactive SSH shell without a password.
+    if [[ -z "${FRANKA_SUDO_PASSWORD_FILE:-}" ]] && command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
         return 0
     fi
     if [[ -z "${FRANKA_SUDO_PASSWORD_FILE:-}" && -n "${FRANKA_SUDO_PASSWORD:-}" ]]; then
@@ -132,6 +139,7 @@ fi
 echo "✅ 配置目录检查通过"
 
 echo ">>> 启动Franka 客户端 ..."
+echo "    FR3 B / right Desk: $FRANKA_RIGHT_ROBOT_IP:1337 (FCI)"
 cd "$WORK_DIR" || { echo "❌ 无法进入工作目录 $WORK_DIR"; exit 1; }
 echo "📝 调试信息：当前工作目录=$(pwd)"
 

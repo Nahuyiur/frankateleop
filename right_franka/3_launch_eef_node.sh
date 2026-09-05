@@ -6,6 +6,8 @@ if ss -ltn "sport = :$NODE_PORT" 2>/dev/null | grep -q LISTEN; then
     echo "error: right EEF node port $NODE_PORT already in use; existing services are not stopped." >&2
     exit 1
 fi
+# Keep libfranka's 1 s communication watchdog quiet during Pico preview.
+export FRANKA_LAZY_EE_START="${FRANKA_LAZY_EE_START:-1}"
 exec bash "$SCRIPT_DIR/3_launch_node.sh" \
     --hostname 127.0.0.1 \
     --tele-port "$NODE_PORT" \
