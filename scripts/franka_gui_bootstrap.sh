@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
 
-FRANKA_GUI_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/franka_runtime_config.sh
-source "$FRANKA_GUI_SCRIPTS_DIR/franka_runtime_config.sh"
-
 franka_gui_reexec_with_dialout() {
     local script_path="$1"
     shift
@@ -72,7 +68,6 @@ PY
 }
 
 franka_gui_export_defaults() {
-    franka_runtime_export_defaults
     local password_file="$HOME/.franka_gui_sudo_password"
     local right_identity_file="$HOME/.ssh/frankateleop_right_ed25519"
     if [[ -z "${FRANKA_GUI_SUDO_PASSWORD_FILE:-}" && -f "$password_file" ]]; then
@@ -83,6 +78,17 @@ franka_gui_export_defaults() {
         export BI_ARM_SSH_IDENTITY_FILE="$right_identity_file"
     fi
     export FRANKA_GUI_STORAGE_MODE="${FRANKA_GUI_STORAGE_MODE:-direct-nas}"
+    export BI_ARM_RIGHT_HOST="${BI_ARM_RIGHT_HOST:-192.168.1.131}"
+    export BI_ARM_RIGHT_SSH="${BI_ARM_RIGHT_SSH:-pnp@$BI_ARM_RIGHT_HOST}"
+    if [[ "$BI_ARM_RIGHT_SSH" != *@* ]]; then
+        export BI_ARM_RIGHT_SSH="pnp@$BI_ARM_RIGHT_SSH"
+    fi
+    export BI_ARM_RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
+    export BI_ARM_LEFT_ZMQ_PORT="${BI_ARM_LEFT_ZMQ_PORT:-6002}"
+    export BI_ARM_RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
+    export BI_ARM_RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
+    export FRANKA_RIGHT_ZMQ_HOST="${FRANKA_RIGHT_ZMQ_HOST:-$BI_ARM_RIGHT_HOST}"
+    export FRANKA_RIGHT_ZMQ_PORT="${FRANKA_RIGHT_ZMQ_PORT:-$BI_ARM_RIGHT_REMOTE_ZMQ_PORT}"
     export BI_ARM_RIGHT_ROBOTIQ_COMPORT="${BI_ARM_RIGHT_ROBOTIQ_COMPORT:-${RIGHT_ROBOTIQ_COMPORT:-}}"
     export BI_ARM_LEFT_ROBOTIQ_COMPORT="${BI_ARM_LEFT_ROBOTIQ_COMPORT:-${LEFT_ROBOTIQ_COMPORT:-}}"
     export BI_ARM_SSH_PASSWORD="${BI_ARM_SSH_PASSWORD:-}"

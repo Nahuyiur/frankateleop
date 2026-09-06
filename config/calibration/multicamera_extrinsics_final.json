@@ -1,0 +1,166 @@
+{
+  "schema_version": "franka_multicamera_extrinsics_v2",
+  "created_at": "2026-09-04T20:47:19.6427474+08:00",
+  "status": "accepted_for_calibrated_recording_and_offline_coordinate_conversion",
+  "reference_frame": "franka_base",
+  "transform_convention": {
+    "matrix_layout": "row-major 4x4 homogeneous transform",
+    "base_T_camera": "p_base = base_T_camera @ p_camera_h",
+    "EE_T_camera": "p_EE = EE_T_camera @ p_camera_h",
+    "units": "metres"
+  },
+  "target": {
+    "type": "three-face repeated ChArUco",
+    "dictionary": "DICT_4X4_50",
+    "squares_x": 11,
+    "squares_y": 9,
+    "square_length_m": 0.03,
+    "marker_length_m": 0.021,
+    "selected_physical_face": "bottom horizontal face containing the red block",
+    "face_identity_note": "All three faces repeat marker IDs. The bottom face was isolated geometrically and independently checked using the red block; IDs alone were never used as physical-face identity."
+  },
+  "method": {
+    "name": "calibrated wrist camera bridge with shared static ChArUco face",
+    "detector_scale": 3.0,
+    "pose_estimator": "ArUco RANSAC initialization, repeated-ID face rejection, ChArUco corner interpolation, iterative PnP and LM refinement",
+    "fusion": "equal-weight SE(3) mean of two independent target placements; frames within a placement are averaged first to avoid pseudo-replication",
+    "depth_usage": "aligned depth used for visibility and sanity checks only; RGB ChArUco corners are the metric-pose primary constraint"
+  },
+  "cameras": {
+    "left_wrist": {
+      "serial_number": "347622075798",
+      "mount": "eye_in_hand",
+      "parent_frame": "franka_EE",
+      "EE_T_camera": [
+        [-0.7022470078232197, -0.6528087694059106, -0.2840595898576131, 0.052194379500644573],
+        [0.7116838234351912, -0.654264743618792, -0.2558198208077392, 0.024862179525949962],
+        [-0.018848752319509665, -0.3818093186974055, 0.9240488995133435, -0.077273950382777],
+        [0.0, 0.0, 0.0, 1.0]
+      ],
+      "intrinsics_640x480": {
+        "fx": 607.6595458984375,
+        "fy": 607.5778198242188,
+        "ppx": 326.1630554199219,
+        "ppy": 243.69284057617188,
+        "coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]
+      },
+      "hand_eye_quality": {
+        "used_robot_poses": 12,
+        "translation_residual_rms_mm": 3.2980747372962558,
+        "translation_residual_max_mm": 5.734289320434422,
+        "rotation_residual_rms_deg": 0.33936343994407425,
+        "rotation_residual_max_deg": 0.5895147786880721
+      }
+    },
+    "left": {
+      "serial_number": "347622072146",
+      "mount": "fixed",
+      "parent_frame": "franka_base",
+      "base_T_camera": [
+        [-0.35486738035249826, -0.5536435723752107, 0.7533577749843499, -0.18430767702806644],
+        [-0.925902495092318, 0.3197481660499761, -0.2011608309027807, 0.4518149708940923],
+        [-0.12951336588775525, -0.7689212606472082, -0.6260881591127024, 0.9753127713449601],
+        [0.0, 0.0, 0.0, 1.0]
+      ],
+      "intrinsics_640x480": {
+        "fx": 606.1422729492188,
+        "fy": 605.8550415039062,
+        "ppx": 321.8672180175781,
+        "ppy": 259.2504577636719,
+        "coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]
+      },
+      "quality": {
+        "cross_placement_translation_mm": 4.680916,
+        "cross_placement_rotation_deg": 0.187330,
+        "placement_0_selected_frames": 29,
+        "placement_0_translation_repeatability_rms_mm": 1.34827,
+        "placement_0_rotation_repeatability_rms_deg": 0.065812,
+        "placement_1_selected_frames": 3,
+        "placement_1_translation_repeatability_max_mm": 3.02760,
+        "placement_1_rotation_repeatability_max_deg": 0.151922,
+        "placement_1_charuco_corners_per_frame": [37, 38, 35],
+        "placement_1_reprojection_rms_px": [0.28245, 0.30617, 0.239602]
+      }
+    },
+    "middle": {
+      "serial_number": "332322072361",
+      "mount": "fixed",
+      "parent_frame": "franka_base",
+      "base_T_camera": [
+        [0.47657100451074746, -0.5605927475464272, 0.6772118199337374, -0.2244598493744449],
+        [-0.877796936657596, -0.260929067041292, 0.4017319503941669, -0.37109517941336123],
+        [-0.04850376948400553, -0.78590826014956, -0.6164378240946395, 1.0892628830759004],
+        [0.0, 0.0, 0.0, 1.0]
+      ],
+      "intrinsics_640x480": {
+        "fx": 608.280517578125,
+        "fy": 608.1031494140625,
+        "ppx": 325.3789978027344,
+        "ppy": 248.78114318847656,
+        "coeffs": [0.0, 0.0, 0.0, 0.0, 0.0]
+      },
+      "quality": {
+        "cross_placement_translation_mm": 3.603480,
+        "cross_placement_rotation_deg": 0.144499,
+        "placement_0_selected_frames": 29,
+        "placement_0_translation_repeatability_rms_mm": 1.240523,
+        "placement_0_rotation_repeatability_rms_deg": 0.054877,
+        "placement_1_selected_frames": 3,
+        "placement_1_translation_repeatability_max_mm": 2.663174,
+        "placement_1_rotation_repeatability_max_deg": 0.114950,
+        "placement_1_charuco_corners_per_frame": [21, 19, 21],
+        "placement_1_reprojection_rms_px": [0.27269, 0.28471, 0.28098]
+      }
+    }
+  },
+  "acceptance": {
+    "cross_placement_threshold_translation_mm": 10.0,
+    "cross_placement_threshold_rotation_deg": 1.0,
+    "left_passed": true,
+    "middle_passed": true,
+    "three_rgbd_stream_self_test": {
+      "resolution": [640, 480],
+      "requested_fps": 30,
+      "measured_fps": {
+        "left_wrist": 30.2,
+        "left": 30.1,
+        "middle": 29.9
+      },
+      "error": null
+    }
+  },
+  "sources": {
+    "hand_eye_result": {
+      "path": "/home/muka/Desktop/eye_in_hand_calibration_20260904/hand_eye_calibration_result.json",
+      "sha256": "9559abe5027e438abe4644ad821c37008f13fb022faeb06bc095ca55946f7695"
+    },
+    "placement_0_episode": {
+      "path": "/home/muka/Desktop/multicam_base_calibration_20260904/pose_000/rgbd/0",
+      "metadata_sha256": "9a52fb38a4b86e42815fe1e7dd728b658bf5d62206cd767208f67ebb57b6fb16"
+    },
+    "placement_1_snapshots": [
+      {
+        "path": "/home/muka/Desktop/multicam_calibration_preview/snapshot_20260904_202943_270",
+        "metadata_sha256": "bb3390e194316c4e9f9bc42fd26cbfea117f1fc402233ff2b54a57cd4d53918a"
+      },
+      {
+        "path": "/home/muka/Desktop/multicam_calibration_preview/snapshot_20260904_202943_617",
+        "metadata_sha256": "c2cd12d66a356d5fe0e1c36235c5f7c2adea72d9fb8f2a572cb1188dbbc6dd0"
+      },
+      {
+        "path": "/home/muka/Desktop/multicam_calibration_preview/snapshot_20260904_202943_805",
+        "metadata_sha256": "14db7b3507201f6c42c7666194786d59ea56f9b1355306907dd33eb207bdac20"
+      }
+    ],
+    "excluded_legacy_result": {
+      "path": "/home/muka/Desktop/multicam_base_calibration_20260904/multicamera_extrinsics_pose001.json",
+      "reason": "legacy marker-corner solution had only 4/8 median markers for left/middle and failed the cross-placement translation threshold; retained for audit, not fused"
+    }
+  },
+  "limitations": {
+    "safe_for_calibrated_recording": true,
+    "safe_for_offline_coordinate_conversion": true,
+    "safe_for_unattended_direct_robot_motion": false,
+    "note": "Before autonomous contact motion, retain workspace bounds, collision checking, approach-height limits, and an independent object-point validation."
+  }
+}

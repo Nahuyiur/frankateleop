@@ -36,6 +36,7 @@ class ProcessManager(QtCore.QObject):
         self,
         repo_root: Path,
         mode: str = "single",
+        teleop_method: str = "gello",
         parent: QtCore.QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -43,6 +44,7 @@ class ProcessManager(QtCore.QObject):
         if mode not in {"single", "right", "dual"}:
             raise ValueError(f"Unsupported process manager mode: {mode}")
         self.mode = mode
+        self.teleop_method = teleop_method if teleop_method in {"gello", "spacemouth"} else "gello"
         log_roots = {
             "single": "fr3_gui",
             "right": "fr3_gui_right",
@@ -122,7 +124,12 @@ class ProcessManager(QtCore.QObject):
     def is_stack_running(self) -> bool:
         labels = {
             "single": ("1_launch_robot", "2_launch_gripper", "3_launch_node", "4_run_env"),
-            "right": ("15_right_arm_stack",),
+            "right": (
+                "right_1_launch_robot",
+                "right_2_launch_gripper",
+                "right_3_launch_node",
+                "right_4_run_env",
+            ),
             "dual": ("15_bi_arm_stack",),
         }[self.mode]
         return any(self._is_managed_running(label) for label in labels)
@@ -141,18 +148,22 @@ class ProcessManager(QtCore.QObject):
                 if not self._stop_stack_worker(True):
                     raise RuntimeError("双臂旧控制栈未能安全停止，拒绝启动 Replay。")
             return
-        if self.mode == "right" and run_mode == "execute" and self.is_stack_running():
-            raise RuntimeError(
-                "右臂 GUI 当前 1-4 栈仍在运行，里面包含远端 4_run_env。"
-                "为避免 teleop 和 replay 同时控制右臂，GUI 暂不直接执行右臂 replay。"
-                "请先用文件检查或硬件 dry-run；真正执行前需要停止远端 4_run_env，"
-                "但保留右臂 1-3 robot/node 栈。"
-            )
+        if self.mode == "right":
+            if self._is_managed_running("right_4_run_env"):
+                self._emit_log("Replay 前停止本机右臂 4_run_env，保留 1-3 robot/node 栈。")
+                self._stop_one("right_4_run_env")
+            return
 
     def stop_teleop_env(self) -> None:
-        if self.mode in {"right", "dual"}:
-            label = "右臂" if self.mode == "right" else "双臂"
-            self.status_changed.emit(f"{label} GUI 模式下请使用“停止全部”清理遥操作栈。")
+        if self.mode == "right":
+            threading.Thread(
+                target=self._stop_one_worker,
+                args=("right_4_run_env",),
+                daemon=True,
+            ).start()
+            return
+        if self.mode == "dual":
+            self.status_changed.emit("双臂 GUI 模式下请使用“停止全部”清理遥操作栈。")
             return
         threading.Thread(target=self._stop_one_worker, args=("4_run_env",), daemon=True).start()
 
@@ -178,6 +189,7 @@ class ProcessManager(QtCore.QObject):
             self._run_log_dir = self.log_root / time.strftime("%Y%m%d_%H%M%S")
             self._run_log_dir.mkdir(parents=True, exist_ok=True)
             self._emit_log(f"日志目录: {self._run_log_dir}")
+            self._emit_log(f"遥操方式: {self.teleop_method}")
             self._prepare_sudo()
             self._raise_if_start_cancelled()
             self._cleanup_stale_pipeline_processes()
@@ -242,10 +254,39 @@ class ProcessManager(QtCore.QObject):
             self._raise_if_start_cancelled()
             self._cleanup_stale_pipeline_processes()
             self._raise_if_start_cancelled()
-            self._start_right_stack_script()
+            self._start_script(
+                "right_1_launch_robot",
+                "right_franka/1_launch_robot.sh",
+                self._check_robot_grpc_ready,
+            )
+            self._wait_for_stable_ready(
+                "right_1_launch_robot",
+                self._check_robot_grpc_ready,
+                seconds=4,
+            )
+            self._start_script(
+                "right_2_launch_gripper",
+                "right_franka/2_launch_gripper.sh",
+                self._check_right_gripper_grpc_ready,
+            )
+            self._require_managed_alive("right_1_launch_robot")
+            if not self._check_robot_grpc_ready(Path()):
+                raise RuntimeError(
+                    "右臂 robot gRPC 在启动夹爪后断开；请检查 right_1_launch_robot.log。"
+                )
+            self._start_script(
+                "right_3_launch_node",
+                "right_franka/3_launch_node.sh",
+                self._check_robot_zmq_ready,
+            )
+            self._start_script(
+                "right_4_run_env",
+                "right_franka/4_run_env.sh",
+                self._check_env_loop_ready,
+            )
             self._cleanup_failed = False
             self.stack_state_changed.emit("running")
-            self.status_changed.emit("右臂机器人栈已启动: right 1-4 ready")
+            self.status_changed.emit("右臂本机机器人栈已启动: right 1-4 ready")
         except _StartCancelled:
             stopped = self._stop_stack_worker(False)
             self.stack_state_changed.emit("stopped" if stopped else "error")
@@ -260,7 +301,16 @@ class ProcessManager(QtCore.QObject):
                 success = self._stop_one("15_bi_arm_stack")
                 label = "双臂机器人栈"
             elif self.mode == "right":
-                success = self._stop_one("15_right_arm_stack")
+                results = [
+                    self._stop_one(process_label)
+                    for process_label in (
+                        "right_4_run_env",
+                        "right_3_launch_node",
+                        "right_2_launch_gripper",
+                        "right_1_launch_robot",
+                    )
+                ]
+                success = all(results)
                 label = "右臂机器人栈"
             else:
                 results = [
@@ -300,7 +350,10 @@ class ProcessManager(QtCore.QObject):
         script_path = self.repo_root / script_name
         self._emit_log(f"启动 {script_name} ...")
         log = log_path.open("ab")
-        env = _sanitized_subprocess_environment(PYTHONUNBUFFERED="1")
+        env = _sanitized_subprocess_environment(
+            PYTHONUNBUFFERED="1",
+            FRANKA_TELEOP_AGENT=("spacemouse" if self.teleop_method == "spacemouth" else "teleop"),
+        )
         password_file = _sudo_password_file()
         if password_file and not env.get("FRANKA_SUDO_PASSWORD_FILE"):
             env["FRANKA_SUDO_PASSWORD_FILE"] = password_file
@@ -567,6 +620,18 @@ import grpc
 import polymetis_pb2
 import polymetis_pb2_grpc
 channel = grpc.insecure_channel("127.0.0.1:50052")
+grpc.channel_ready_future(channel).result(timeout=2)
+stub = polymetis_pb2_grpc.GripperServerStub(channel)
+stub.GetRobotClientMetadata(polymetis_pb2.Empty(), timeout=2)
+"""
+        return _conda_python("polymetis", code, timeout=10).returncode == 0
+
+    def _check_right_gripper_grpc_ready(self, _log_path: Path) -> bool:
+        code = """
+import grpc
+import polymetis_pb2
+import polymetis_pb2_grpc
+channel = grpc.insecure_channel("127.0.0.1:50053")
 grpc.channel_ready_future(channel).result(timeout=2)
 stub = polymetis_pb2_grpc.GripperServerStub(channel)
 stub.GetRobotClientMetadata(polymetis_pb2.Empty(), timeout=2)

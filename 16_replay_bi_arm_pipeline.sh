@@ -2,20 +2,20 @@
 set -Eeuo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/franka_runtime_config.sh
-source "$REPO_ROOT/scripts/franka_runtime_config.sh"
-franka_runtime_export_defaults
-RIGHT_HOST="$BI_ARM_RIGHT_HOST"
-RIGHT_SSH="$BI_ARM_RIGHT_SSH"
-RIGHT_REPO="$BI_ARM_RIGHT_REPO"
-RIGHT_REMOTE_ZMQ_PORT="$BI_ARM_RIGHT_REMOTE_ZMQ_PORT"
-RIGHT_LOCAL_ZMQ_PORT="$BI_ARM_RIGHT_LOCAL_ZMQ_PORT"
-RIGHT_LOCAL_GRIPPER_PORT="$BI_ARM_RIGHT_LOCAL_GRIPPER_PORT"
-LEFT_ZMQ_PORT="$BI_ARM_LEFT_ZMQ_PORT"
-LEFT_ROBOT_PORT="$BI_ARM_LEFT_ROBOT_PORT"
-LEFT_GRIPPER_PORT="$BI_ARM_LEFT_GRIPPER_PORT"
-RIGHT_ROBOT_PORT="$BI_ARM_RIGHT_ROBOT_PORT"
-RIGHT_GRIPPER_PORT="$BI_ARM_RIGHT_GRIPPER_PORT"
+RIGHT_HOST="${BI_ARM_RIGHT_HOST:-192.168.1.131}"
+RIGHT_SSH="${BI_ARM_RIGHT_SSH:-pnp@$RIGHT_HOST}"
+if [[ "$RIGHT_SSH" != *@* ]]; then
+    RIGHT_SSH="pnp@$RIGHT_SSH"
+fi
+RIGHT_REPO="${BI_ARM_RIGHT_REPO:-/home/pnp/frankateleop}"
+RIGHT_REMOTE_ZMQ_PORT="${BI_ARM_RIGHT_REMOTE_ZMQ_PORT:-6001}"
+RIGHT_LOCAL_ZMQ_PORT="${BI_ARM_RIGHT_LOCAL_ZMQ_PORT:-16001}"
+RIGHT_LOCAL_GRIPPER_PORT="${BI_ARM_RIGHT_LOCAL_GRIPPER_PORT:-15053}"
+LEFT_ZMQ_PORT="${BI_ARM_LEFT_ZMQ_PORT:-6002}"
+LEFT_ROBOT_PORT="${BI_ARM_LEFT_ROBOT_PORT:-50052}"
+LEFT_GRIPPER_PORT="${BI_ARM_LEFT_GRIPPER_PORT:-50054}"
+RIGHT_ROBOT_PORT="${BI_ARM_RIGHT_ROBOT_PORT:-50051}"
+RIGHT_GRIPPER_PORT="${BI_ARM_RIGHT_GRIPPER_PORT:-50053}"
 READY_TIMEOUT="${BI_ARM_READY_TIMEOUT:-120}"
 SSH_COMMAND_RETRIES="${BI_ARM_SSH_COMMAND_RETRIES:-4}"
 SSH_RETRY_DELAY="${BI_ARM_SSH_RETRY_DELAY:-2}"
@@ -82,11 +82,11 @@ Usage:
   bash 16_replay_bi_arm_pipeline.sh <dual-arm episode dir, metadata.json, or pkl.gz> [replay args...]
 
 Examples:
-  bash 16_replay_bi_arm_pipeline.sh "$HOME/Desktop/Muka_NAS/test/High_Quality/0"
-  bash 16_replay_bi_arm_pipeline.sh "$HOME/Desktop/Muka_NAS/test/High_Quality" --latest
-  bash 16_replay_bi_arm_pipeline.sh "$HOME/Desktop/Muka_NAS/test/High_Quality/0" --skip-robot-check
-  bash 16_replay_bi_arm_pipeline.sh "$HOME/Desktop/Muka_NAS/test/High_Quality/0" --execute
-  bash 16_replay_bi_arm_pipeline.sh "$HOME/Desktop/Muka_NAS/test/High_Quality/0" --execute --speed 0.5
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality --latest
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --skip-robot-check
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --execute
+  bash 16_replay_bi_arm_pipeline.sh /home/pnp/Desktop/franka_record_data/test/High_Quality/0 --execute --speed 0.5
 
 Default mode is dry-run: it starts/checks both robot nodes but sends no replay
 trajectory unless --execute is passed. If DEFAULT_APPROACH_START=1 and the

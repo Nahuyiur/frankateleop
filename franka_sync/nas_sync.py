@@ -81,7 +81,7 @@ class SyncConfig:
 
     cache_root: Path = DEFAULT_CACHE_ROOT
     nas_root: Path = DEFAULT_NAS_ROOT
-    expected_nas_source: str = "//192.168.1.119/Muka"
+    expected_nas_source: str = "//192.168.100.79/Muka"
     expected_nas_fs_type: str = "cifs"
     activity_fresh_seconds: float = 120.0
     max_load_per_cpu: float = 0.5
@@ -137,7 +137,7 @@ class SyncConfig:
         nas_text = values.get("FRANKA_SYNC_NAS_ROOT", "").strip()
         nas_root = Path(nas_text).expanduser() if nas_text else DEFAULT_NAS_ROOT
         expected_nas_source = values.get(
-            "FRANKA_SYNC_EXPECTED_NAS_SOURCE", "//192.168.1.119/Muka"
+            "FRANKA_SYNC_EXPECTED_NAS_SOURCE", "//192.168.100.79/Muka"
         ).strip()
         expected_nas_fs_type = values.get(
             "FRANKA_SYNC_EXPECTED_NAS_FS_TYPE", "cifs"
@@ -1887,10 +1887,13 @@ def is_real_mount(
             return False
         filesystem = fields[separator + 1].casefold()
         source = _unescape_mountinfo(fields[separator + 2])
+        # Automount creates an autofs entry before the real CIFS entry.
+        # Keep scanning the same mount point until the expected filesystem/source
+        # is found instead of rejecting the first autofs placeholder.
         if filesystem != expected_filesystem.strip().casefold():
-            return False
+            continue
         if expected_source and source.casefold() != expected_source.casefold():
-            return False
+            continue
         return True
     return False
 

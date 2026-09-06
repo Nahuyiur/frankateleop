@@ -8,16 +8,11 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "teleop"))
 
-try:
-    from experiments.run_env import (  # noqa: E402
-        arm_joint_indices,
-        limit_arm_step,
-        wrap_arm_action_to_nearest,
-    )
-except ModuleNotFoundError as exc:
-    raise unittest.SkipTest(
-        f"run_env optional runtime dependency is unavailable: {exc.name}"
-    ) from exc
+from experiments.run_env import (  # noqa: E402
+    arm_joint_indices,
+    limit_arm_step,
+    wrap_arm_action_to_nearest,
+)
 
 
 class RunEnvAlignmentTest(unittest.TestCase):

@@ -606,6 +606,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "right": "启动右臂 1-4",
             "dual": "启动双臂 1-4",
         }
+        self.teleop_method_combo = QtWidgets.QComboBox()
+        self.teleop_method_combo.addItem("gello遥操", "gello")
+        self.teleop_method_combo.addItem("spacemouth遥操", "spacemouth")
+        self.teleop_method_combo.setToolTip("启动机器人栈前选择一种遥操方式；运行中不可切换")
+        self.teleop_method_combo.currentIndexChanged.connect(self._teleop_method_changed)
+        layout.addWidget(self.teleop_method_combo)
+
         self.start_stack_btn = QtWidgets.QPushButton(start_labels[self.process_manager.mode])
         self.start_stack_btn.setIcon(self.style().standardIcon(QtWidgets.QStyle.StandardPixmap.SP_MediaPlay))
         self.stop_stack_btn = QtWidgets.QPushButton("停止全部")
@@ -851,6 +858,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.task_combo.editTextChanged.connect(self._save_form_state)
         self.instruction_edit.textChanged.connect(self._save_form_state)
         self.metadata_edit.textChanged.connect(self._save_form_state)
+
+    def _teleop_method_changed(self, index: int) -> None:
+        if self.process_manager.is_stack_running():
+            self.teleop_method_combo.blockSignals(True)
+            self.teleop_method_combo.setCurrentIndex(0 if self.process_manager.teleop_method == "gello" else 1)
+            self.teleop_method_combo.blockSignals(False)
+            return
+        self.process_manager.teleop_method = str(self.teleop_method_combo.itemData(index) or "gello")
 
     def _start_stack_clicked(self) -> None:
         if self._guard_replay_running("Replay 运行中不能启动机器人栈。"):
@@ -1143,6 +1158,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stack_state.setText(f"机器人栈: {state}")
         self.start_stack_btn.setEnabled(state in {"stopped", "error"})
         self.stop_stack_btn.setEnabled(state not in {"stopped", "stopping"})
+        if hasattr(self, "teleop_method_combo"):
+            self.teleop_method_combo.setEnabled(state in {"stopped", "error"})
 
     def _set_status(self, text: str) -> None:
         self.capture_state.setText(f"状态: {text}")

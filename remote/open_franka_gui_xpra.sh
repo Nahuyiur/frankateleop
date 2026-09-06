@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=scripts/franka_runtime_config.sh
-source "$REPO_ROOT/scripts/franka_runtime_config.sh"
-franka_runtime_export_xpra_defaults
-
 usage() {
     cat <<'EOF'
 Usage:
@@ -14,9 +9,8 @@ Usage:
   bash open_franka_gui_xpra.sh C [extra GUI args...]
 
 Environment overrides:
-  FRANKA_XPRA_HOST=muka@192.168.1.170
+  FRANKA_XPRA_HOST=muka@192.168.100.67
   FRANKA_XPRA_REPO=/home/muka/frankateleop
-  FRANKA_XPRA_SSH_SOCKET=/tmp/codex-franka-170.sock
   FRANKA_XPRA_DISPLAY=124
   FRANKA_XPRA_SSH="ssh ..."
   FRANKA_XPRA_BIN=/Applications/Xpra.app/Contents/MacOS/Xpra
@@ -43,8 +37,8 @@ case "$mode_key" in
         ;;
 esac
 
-host="$FRANKA_XPRA_HOST"
-repo="$FRANKA_XPRA_REPO"
+host="${FRANKA_XPRA_HOST:-muka@192.168.100.67}"
+repo="${FRANKA_XPRA_REPO:-/home/muka/frankateleop}"
 display_no="${FRANKA_XPRA_DISPLAY:-$default_display}"
 xpra_bin="${FRANKA_XPRA_BIN:-/Applications/Xpra.app/Contents/MacOS/Xpra}"
 
@@ -59,8 +53,8 @@ fi
 
 if [[ -n "${FRANKA_XPRA_SSH:-}" ]]; then
     ssh_cmd="$FRANKA_XPRA_SSH"
-elif [[ -n "$FRANKA_XPRA_SSH_SOCKET" && -S "$FRANKA_XPRA_SSH_SOCKET" ]]; then
-    ssh_cmd="ssh -S $FRANKA_XPRA_SSH_SOCKET -o BatchMode=yes"
+elif [[ -S /tmp/codex-franka-67.sock ]]; then
+    ssh_cmd="ssh -S /tmp/codex-franka-67.sock -o BatchMode=yes"
 else
     ssh_cmd="ssh"
 fi

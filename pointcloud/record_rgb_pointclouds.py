@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import subprocess
+import threading
 import time
+from dataclasses import dataclass
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -23,6 +27,111 @@ from franka_capture.recording.preview import concatenate_rgb_images, show_rgb_pr
 DEFAULT_OUTPUT_ROOT = str(Path.home() / "Desktop" / "Muka_NAS")
 DEFAULT_TASK = "rgb_pointcloud"
 FIXED_RECORDING_FPS = 30
+
+
+@dataclass
+class _FrameSample:
+    rgb: Optional[np.ndarray] = None
+    depth: Optional[np.ndarray] = None
+    captured_monotonic_ns: Optional[int] = None
+    sequence: int = 0
+    error: Optional[str] = None
+
+
+class _CameraWorker:
+    """Continuously read one camera so three USB streams do not block serially."""
+
+    def __init__(self, name: str, camera: Any) -> None:
+        self.name = name
+        self.camera = camera
+        self.sample = _FrameSample()
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run,
+            name=f"rgbd-reader-{name}",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def stop(self) -> None:
+        self.stop_event.set()
+
+    def join(self, timeout: float = 3.0) -> None:
+        self.thread.join(timeout=timeout)
+
+    def latest(self) -> _FrameSample:
+        with self.lock:
+            return _FrameSample(
+                rgb=None if self.sample.rgb is None else self.sample.rgb.copy(),
+                depth=None if self.sample.depth is None else self.sample.depth.copy(),
+                captured_monotonic_ns=self.sample.captured_monotonic_ns,
+                sequence=self.sample.sequence,
+                error=self.sample.error,
+            )
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                rgb, depth = self.camera.read()
+                with self.lock:
+                    self.sample.rgb = rgb
+                    self.sample.depth = depth
+                    self.sample.captured_monotonic_ns = time.monotonic_ns()
+                    self.sample.sequence += 1
+                    self.sample.error = None
+            except Exception as exc:
+                with self.lock:
+                    self.sample.error = str(exc)
+                self.stop_event.wait(0.05)
+
+
+def _retime_constant_rate_videos(
+    output_dir: Path,
+    camera_names: list[str],
+    source_fps: float,
+    effective_fps: float,
+) -> None:
+    """Correct MP4 presentation timestamps without re-encoding image data."""
+
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required to correct the recorded video timeline")
+    scale = float(source_fps) / float(effective_fps)
+    completed: list[tuple[Path, Path]] = []
+    temporary_paths = [output_dir / f".{name}.retimed.mp4" for name in camera_names]
+    try:
+        for name, temporary in zip(camera_names, temporary_paths):
+            source = output_dir / f"{name}.mp4"
+            if temporary.exists():
+                temporary.unlink()
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-itsscale",
+                    f"{scale:.12f}",
+                    "-i",
+                    str(source),
+                    "-map",
+                    "0:v:0",
+                    "-c",
+                    "copy",
+                    str(temporary),
+                ],
+                check=True,
+            )
+            completed.append((source, temporary))
+        for source, temporary in completed:
+            temporary.replace(source)
+    finally:
+        for temporary in temporary_paths:
+            if temporary.exists():
+                temporary.unlink()
 
 
 def parse_args() -> argparse.Namespace:
@@ -147,6 +256,7 @@ def main() -> None:
     next_index = _next_episode_index(output_root, args.task, args.index)
 
     cameras = {}
+    workers: Dict[str, _CameraWorker] = {}
     writer = None
     record_flag = False
     recording_started_monotonic = None
@@ -209,6 +319,36 @@ def main() -> None:
         frames = writer.frames
         metadata = dict(writer.metadata or {})
         writer.update_metadata({"ended_at_unix": time.time()})
+        if frame_count >= 2:
+            capture_times = [
+                float(np.mean(list(frame["camera_capture_monotonic_ns"].values())))
+                / 1e9
+                for frame in frames
+            ]
+            capture_span_sec = capture_times[-1] - capture_times[0]
+            if capture_span_sec > 0:
+                effective_fps = (frame_count - 1) / capture_span_sec
+                source_fps = float(writer.video_fps)
+                # The encoder starts as CFR at the requested camera rate.  If
+                # disk/codec work drops frames, scale MP4 PTS to the measured
+                # capture span so human motion does not play back too quickly.
+                if abs(effective_fps - source_fps) / source_fps > 0.01:
+                    writer.close_videos()
+                    _retime_constant_rate_videos(
+                        writer.output_dir,
+                        camera_names,
+                        source_fps,
+                        effective_fps,
+                    )
+                writer.video_fps = float(effective_fps)
+                writer.update_metadata(
+                    {
+                        "requested_camera_fps": int(args.camera_fps),
+                        "measured_video_fps": float(effective_fps),
+                        "capture_span_sec": float(capture_span_sec),
+                        "timing_basis": "mean per-camera capture timestamp; MP4 PTS retimed without re-encoding",
+                    }
+                )
         output_dir = writer.finish()
         if depth_camera_names and not args.no_depth_proof:
             try:
@@ -268,6 +408,24 @@ def main() -> None:
             print("If that works, add cameras back one by one to find the USB/camera that times out.")
             raise
         camera_metadata = {name: camera.metadata() for name, camera in cameras.items()}
+        workers = {
+            name: _CameraWorker(name, camera) for name, camera in cameras.items()
+        }
+        for worker in workers.values():
+            worker.start()
+        startup_deadline = time.monotonic() + 12.0
+        while time.monotonic() < startup_deadline:
+            startup_samples = {name: worker.latest() for name, worker in workers.items()}
+            if all(sample.rgb is not None for sample in startup_samples.values()):
+                break
+            time.sleep(0.02)
+        else:
+            details = {
+                name: sample.error or "no frame"
+                for name, sample in startup_samples.items()
+                if sample.rgb is None
+            }
+            raise RuntimeError(f"Timed out waiting for camera frames: {details}")
         print(f"Connected cameras: {camera_names}")
         print(
             "Depth cameras: "
@@ -284,17 +442,67 @@ def main() -> None:
         if args.auto_start:
             start_episode()
 
+        last_sequences = {name: 0 for name in camera_names}
         while True:
-            rgb_frames = {}
-            depth_frames = {}
-            for name, camera in cameras.items():
-                rgb, depth = camera.read()
-                rgb_frames[name] = rgb
-                if depth is not None:
-                    depth_frames[name] = depth
+            samples = {name: workers[name].latest() for name in camera_names}
+            failed = {
+                name: sample.error for name, sample in samples.items() if sample.error
+            }
+            if failed:
+                raise RuntimeError(f"Camera reader failed: {failed}")
+            # Process each physical frame at most once. Waiting for every stream
+            # also prevents a fast camera from being duplicated while a slower
+            # camera catches up.
+            if not all(
+                samples[name].sequence > last_sequences[name] for name in camera_names
+            ):
+                time.sleep(0.001)
+                continue
+            last_sequences = {name: samples[name].sequence for name in camera_names}
+            rgb_frames = {name: samples[name].rgb for name in camera_names}
+            depth_frames = {
+                name: samples[name].depth
+                for name in camera_names
+                if samples[name].depth is not None
+            }
 
+            preview_frames = []
+            for name in camera_names:
+                # Keep recorded frames untouched; labels exist only in the live
+                # preview so the operator cannot confuse the three viewpoints.
+                source = rgb_frames[name]
+                panel_width = 480
+                panel_height = max(1, round(source.shape[0] * panel_width / source.shape[1]))
+                panel = cv2.resize(
+                    source,
+                    (panel_width, panel_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+                state = "REC" if record_flag else "READY / PAUSED"
+                label = f"{name}  {state}"
+                cv2.putText(
+                    panel,
+                    label,
+                    (12, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.75,
+                    (0, 0, 0),
+                    4,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    panel,
+                    label,
+                    (12, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.75,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+                preview_frames.append(panel)
             preview = concatenate_rgb_images(
-                [rgb_frames[name] for name in camera_names],
+                preview_frames,
                 line_width=DEFAULT_RECORDING.preview_line_width,
             )
             key = show_rgb_preview("RGB-D Camera Recorder", preview)
@@ -329,6 +537,18 @@ def main() -> None:
                 "camera_only": True,
                 "frame_index": frame_index,
                 "timestamp": time.time(),
+                "camera_sequence": {
+                    name: int(samples[name].sequence) for name in camera_names
+                },
+                "camera_capture_monotonic_ns": {
+                    name: int(samples[name].captured_monotonic_ns)
+                    for name in camera_names
+                },
+                "capture_spread_ms": (
+                    max(samples[name].captured_monotonic_ns for name in camera_names)
+                    - min(samples[name].captured_monotonic_ns for name in camera_names)
+                )
+                / 1e6,
             }
             for name in camera_names:
                 frame[f"{name}_image_path"] = f"{name}.mp4"
@@ -356,6 +576,10 @@ def main() -> None:
         if writer is not None:
             writer.close()
         cv2.destroyAllWindows()
+        for worker in workers.values():
+            worker.stop()
+        for worker in workers.values():
+            worker.join()
         for camera in cameras.values():
             camera.close()
         print("Cameras closed.")
