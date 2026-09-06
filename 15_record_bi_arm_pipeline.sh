@@ -1058,9 +1058,19 @@ start_local_script() {
         export LEFT_TELEOP_PORT="$LEFT_TELEOP_PORT_OVERRIDE"
         export LEFT_ROBOTIQ_COMPORT="$LEFT_ROBOTIQ_COMPORT_OVERRIDE"
         export LEFT_GRIPPER_SERVER_PORT="$LEFT_GRIPPER_PORT"
-        # Keep the high-level launcher and robot wrappers at normal priority;
-        # the Polymetis/Franka RT thread keeps its own FIFO scheduling.
-        exec nice -n 0 bash "$script"
+        # `nice -n 0` does not raise an inherited nice=19 priority; it merely
+        # preserves it.  Renice this process before spawning the robot stack so
+        # the Polymetis IPC/control threads do not compete with desktop work.
+        if ! renice -n 0 -p "$$" >/dev/null 2>&1; then
+            sudo_cmd renice -n 0 -p "$$" >/dev/null 2>&1 || true
+        fi
+        actual_nice="$(ps -o ni= -p "$$" 2>/dev/null | tr -d ' ' || true)"
+        echo "[priority] label=$label pid=$$ nice=${actual_nice:-unknown}"
+        if [[ -z "$actual_nice" || "$actual_nice" -gt 0 ]]; then
+            echo "ERROR: critical launcher remained at low priority (nice=${actual_nice:-unknown})" >&2
+            exit 1
+        fi
+        exec bash "$script"
     ) >"$logfile" 2>&1 &
 
     local pid="$!"
@@ -1068,6 +1078,7 @@ start_local_script() {
     LOCAL_NAMES+=("$label")
     LOCAL_LOGS+=("$logfile")
     wait_until_ready "$label" "$pid" "$logfile" "$check_fn" "$@"
+    log "$label pid=$pid nice=$(ps -o ni= -p "$pid" 2>/dev/null | tr -d ' ' || echo unknown)"
 }
 
 start_remote_script() {

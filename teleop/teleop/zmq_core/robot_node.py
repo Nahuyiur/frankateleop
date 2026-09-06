@@ -31,6 +31,11 @@ class ZMQServerRobot:
         print(debug_message)
         self._timout_message = f"Timeout in Robot Server, Robot: {robot}"
         self._last_idle_log = 0.0
+        self._metrics_lock = threading.Lock()
+        self._request_count = 0
+        self._command_count = 0
+        self._command_timestamps: list[float] = []
+        self._last_command_latency_ms = 0.0
         self._socket.bind(addr)
         self._stop_event = threading.Event()
 
@@ -48,6 +53,7 @@ class ZMQServerRobot:
                     method = request.get("method")
                     args = request.get("args", {})
                     result: Any
+                    request_started = time.monotonic()
                     if method == "num_dofs":
                         result = self._robot.num_dofs()
                     elif method == "get_control_mode":
@@ -64,6 +70,28 @@ class ZMQServerRobot:
                             result = {"error": f"Robot {self._robot} does not support command_ee_pose"}
                         else:
                             result = self._robot.command_ee_pose(**args)
+                        with self._metrics_lock:
+                            now = time.monotonic()
+                            self._command_count += 1
+                            self._command_timestamps.append(now)
+                            cutoff = now - 5.0
+                            self._command_timestamps = [t for t in self._command_timestamps if t >= cutoff]
+                            self._last_command_latency_ms = (now - request_started) * 1000.0
+                    elif method == "get_metrics":
+                        with self._metrics_lock:
+                            now = time.monotonic()
+                            cutoff = now - 5.0
+                            self._command_timestamps = [t for t in self._command_timestamps if t >= cutoff]
+                            window_s = max(1e-3, min(5.0, now - self._command_timestamps[0])) if self._command_timestamps else 0.0
+                            result = {
+                                "pid": __import__("os").getpid(),
+                                "nice": __import__("os").getpriority(__import__("os").PRIO_PROCESS, 0),
+                                "requests_total": self._request_count,
+                                "command_ee_pose_total": self._command_count,
+                                "command_ee_pose_hz": len(self._command_timestamps) / window_s if window_s else 0.0,
+                                "last_command_age_ms": (now - self._command_timestamps[-1]) * 1000.0 if self._command_timestamps else None,
+                                "last_command_latency_ms": self._last_command_latency_ms,
+                            }
                     elif method == "move_to_joint_positions":
                         if not hasattr(self._robot, "move_to_joint_positions"):
                             result = {"error": f"Robot {self._robot} does not support move_to_joint_positions"}
@@ -88,6 +116,8 @@ class ZMQServerRobot:
                     LOGGER.warning("robot request failed method=%s error=%s", method, exc)
 
                 self._socket.send(pickle.dumps(result))
+                with self._metrics_lock:
+                    self._request_count += 1
             except zmq.Again:
                 now = time.monotonic()
                 if now - self._last_idle_log >= 5.0:

@@ -47,3 +47,21 @@ record_data/
 # vim
 *.swp
 MUJOCO_LOG.TXT
+
+# codex scratch
+._*
+.backups/
+.venv/
+.vscode/
+*.bak
+*.bak_*
+*.bak.*
+*.zip
+backups/
+ed -n*
+nohup.out
+umi_genrobot/.conda/
+umi_genrobot/adb_home/
+umi_genrobot/scripts/
+umi_genrobot/tools/
+umi_genrobot/vendor/
