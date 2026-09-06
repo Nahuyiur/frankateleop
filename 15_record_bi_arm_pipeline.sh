@@ -169,8 +169,17 @@ EOF
 }
 
 log() {
-    printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"
+    local message="$*"
+    case "$message" in
+        WARNING:*|ERROR:*|*timeout*|*TIMEOUT*|*limit*|*failed*|*FAILED*|*unavailable*|*recovery*|*Recovery*)
+            printf '[%s] %s\n' "$(date +%H:%M:%S)" "$message"
+            if [[ -n "${PICO_CONTROLLER_LOG_PATH:-}" ]]; then
+                printf '[%s] %s\n' "$(date +%H:%M:%S)" "$message" >> "$PICO_CONTROLLER_LOG_PATH"
+            fi
+            ;;
+    esac
 }
+
 
 q() {
     printf '%q' "$1"
@@ -327,15 +336,15 @@ remote_bash() {
 tail_log() {
     local file="$1"
     if [[ -f "$file" ]]; then
-        log "Last 80 lines from $file:"
-        tail -n 80 "$file" || true
+        log "WARNING: Last 80 warning/error lines from $file:"
+        tail -n 80 "$file" | grep -E 'WARNING:|ERROR:|timeout|TIMEOUT|limit|failed|FAILED|unavailable|recovery|Recovery' || true
     fi
 }
 
 tail_remote_log() {
     local file="$1"
-    log "Last 80 lines from remote $file:"
-    remote_bash "test -f $(q "$file") && tail -n 80 $(q "$file") || true" || true
+    log "WARNING: Last 80 warning/error lines from remote $file:"
+    remote_bash "test -f $(q "$file") && tail -n 80 $(q "$file") | grep -E 'WARNING:|ERROR:|timeout|TIMEOUT|limit|failed|FAILED|unavailable|recovery|Recovery' || true" || true
 }
 
 collect_pid_tree() {
