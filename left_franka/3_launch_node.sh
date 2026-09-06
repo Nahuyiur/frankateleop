@@ -66,7 +66,7 @@ echo ">>> gripper server port=$GRIPPER_SERVER_PORT"
 echo ">>> Robot Node port=$TELEOP_PORT"
 echo ">>> move_to_initial_pose=${FRANKA_MOVE_TO_INITIAL_POSE:-1}"
 echo ">>> initial_pose_source=${FRANKA_INITIAL_POSE_SOURCE:-auto}"
-echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints_v3.json}"
+echo ">>> initial_joints_file=${FRANKA_INITIAL_JOINTS_FILE:-$REPO_ROOT/config/initial_joints_v0.5.json}"
 python3 "$SCRIPT_PATH" \
     --robot=fr3_left \
     --tele_port="$TELEOP_PORT" \

@@ -30,7 +30,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 说明:
   这个脚本只读取当前 robot node 的 7 维 joint_positions 并保存/校验。
   它不会发送 robot/gripper 运动命令。
-  默认配置文件: config/initial_joints.json
+  默认配置文件: config/initial_joints_v0.5.json
 EOF
     exit 0
 fi

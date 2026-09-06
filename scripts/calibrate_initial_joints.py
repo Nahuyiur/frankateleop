@@ -19,7 +19,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG = REPO_ROOT / "config" / "initial_joints.json"
+DEFAULT_CONFIG = REPO_ROOT / "config" / "initial_joints_v0.5.json"
 SCHEMA_VERSION = "initial_joints_v1"
 JOINT_LIMITS_LOWER = (-2.64, -1.68, -2.80, -2.94, -2.70, 0.64, -2.91)
 JOINT_LIMITS_UPPER = (2.64, 1.68, 2.80, -0.25, 2.70, 4.41, 2.91)
