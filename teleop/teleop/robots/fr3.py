@@ -271,7 +271,18 @@ class fr3Robot(Robot):
             return
         self._last_ee_hold_log_time = now
         self._last_ee_hold_reason = reason
-        print(f"Cartesian safety HOLD: {result}")
+        if reason == "joint_soft_limit":
+            LOGGER.warning(
+                "Cartesian safety HOLD: reason=%s joint_index=%s joint_position=%.6f limit_side=%s limit=%.6f margin_rad=%.3f",
+                reason,
+                result.get("joint_index"),
+                float(result.get("joint_position", float("nan"))),
+                result.get("limit_side"),
+                float(result.get("limit", float("nan"))),
+                float(result.get("margin_rad", float("nan"))),
+            )
+        else:
+            LOGGER.warning("Cartesian safety HOLD: %s", result)
 
     def _hold_current_ee_pose(self) -> None:
         """Replace a potentially unsafe target with the measured current pose."""
