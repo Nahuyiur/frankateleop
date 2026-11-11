@@ -1,0 +1,112 @@
+{
+  "profile_id": "dual_franka_98_86_das_tip_v1",
+  "physical_execution_validated": false,
+  "source": "Host98 Pico run_controller.py / current --tool-tip-offset-eef-m and duofranka_base_frames.urdf; home explicitly selected by user",
+  "tool_transforms": {
+    "left": {
+      "translation_m": [
+        0.0,
+        0.0,
+        0.20196
+      ],
+      "quaternion_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    },
+    "right": {
+      "translation_m": [
+        0.0,
+        0.0,
+        0.20196
+      ],
+      "quaternion_xyzw": [
+        0.0,
+        0.0,
+        0.0,
+        1.0
+      ]
+    }
+  },
+  "base_frames": {
+    "left": {
+      "xyz": [
+        0.038,
+        0.132,
+        0.35
+      ],
+      "rpy": [
+        -0.6154,
+        0.5236,
+        0.6154
+      ]
+    },
+    "right": {
+      "xyz": [
+        0.038,
+        -0.132,
+        0.35
+      ],
+      "rpy": [
+        0.6154,
+        0.5236,
+        -0.6154
+      ]
+    }
+  },
+  "joint_limits_lower": [
+    -2.64,
+    -1.68,
+    -2.8,
+    -2.94,
+    -2.7,
+    0.64,
+    -2.91
+  ],
+  "joint_limits_upper": [
+    2.64,
+    1.68,
+    2.8,
+    -0.25,
+    2.7,
+    4.41,
+    2.91
+  ],
+  "joint_soft_margin_rad": 0.1,
+  "home_file": "/home/pnp/frankateleop/config/initial_joints_v0.5.json",
+  "gripper_state_max_width_m": 0.2,
+  "gripper_command_max_width_m": 0.09,
+  "gripper_speed_m_s": 0.025,
+  "gripper_force_n": 20.0,
+  "workspace_xyz": [
+    [
+      0.2,
+      0.75
+    ],
+    [
+      -0.45,
+      0.45
+    ],
+    [
+      0.15,
+      0.8
+    ]
+  ],
+  "min_tcp_separation_m": 0.06,
+  "max_session_translation_m": 0.25,
+  "max_session_rotation_rad": 1.05,
+  "max_chunk_translation_m": 0.15,
+  "max_chunk_rotation_rad": 0.5,
+  "max_translation_speed_m_s": 0.05,
+  "max_rotation_speed_rad_s": 0.4,
+  "max_gripper_speed_m_s": 0.025,
+  "max_tracking_translation_m": 0.035,
+  "max_tracking_rotation_rad": 0.25,
+  "max_observation_age_s": 0.65,
+  "max_image_state_skew_s": 0.3,
+  "max_command_latency_s": 0.25,
+  "output_hz": 50.0,
+  "nominal_policy_hz": 29.97
+}

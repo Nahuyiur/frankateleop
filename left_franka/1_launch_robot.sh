@@ -146,4 +146,4 @@ cd "$WORK_DIR" || { echo "❌ 无法进入工作目录 $WORK_DIR"; exit 1; }
 echo "📝 调试信息：当前工作目录=$(pwd)"
 
 install_sudo_wrapper
-launch_robot.py --config-name=launch_left_robot
+python "$REPO_ROOT/polymetis/polymetis/python/scripts/launch_robot.py" --config-name=launch_left_robot

@@ -43,7 +43,14 @@ int create_real_time_thread(void *(*start_routine)(void *), void *arg = NULL) {
   struct sched_param param;
   pthread_attr_t attr;
   pthread_t thread;
+  cpu_set_t affinity;
   int ret;
+  int affinity_ret;
+
+  const int realtime_cpu = 0;
+  CPU_ZERO(&affinity);
+  CPU_SET(realtime_cpu, &affinity);
+  printf("Using CPU%d for real-time thread affinity\n", realtime_cpu);
 
   int stack_size_mb = 20;
   size_t stack_size = 1024 * 1024 * stack_size_mb;
@@ -117,12 +124,23 @@ int create_real_time_thread(void *(*start_routine)(void *), void *arg = NULL) {
     goto out;
   }
 
+  /* Start the real-time thread directly on the isolated performance core. */
+  ret = pthread_attr_setaffinity_np(&attr, sizeof(affinity), &affinity);
+  if (ret) {
+    printf("pthread attr setaffinity failed with error code %d\n", ret);
+    goto out;
+  }
+
   printf("Creating thread...\n");
   /* Create a pthread with specified attributes */
   ret = pthread_create(&thread, &attr, start_routine, arg);
   if (ret) {
     printf("create pthread failed\n");
     goto out;
+  }
+  affinity_ret = pthread_setaffinity_np(thread, sizeof(affinity), &affinity);
+  if (affinity_ret) {
+    printf("pthread setaffinity failed with error code %d\n", affinity_ret);
   }
   printf("Started realtime thread.\n");
 
